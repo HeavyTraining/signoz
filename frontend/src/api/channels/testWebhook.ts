@@ -33,7 +33,7 @@ const testWebhook = async (
 			webhook_configs: [
 				{
 					send_resolved: true,
-					url: props.api_url,
+					url: `${props.api_url}&text=${props.text}`,
 					http_config: httpConfig,
 				},
 			],

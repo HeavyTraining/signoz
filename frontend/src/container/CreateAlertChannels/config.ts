@@ -13,6 +13,7 @@ export interface SlackChannel extends Channel {
 
 export interface WebhookChannel extends Channel {
 	api_url?: string;
+	text?: string;
 	// basic auth
 	username?: string;
 	password?: string;

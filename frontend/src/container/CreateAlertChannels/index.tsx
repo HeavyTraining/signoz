@@ -162,7 +162,10 @@ function CreateAlertChannels({
 			api_url: selectedConfig?.api_url || '',
 			name: selectedConfig?.name || '',
 			send_resolved: selectedConfig?.send_resolved || false,
+			text: selectedConfig?.text || '',
 		};
+
+		console.log('request', request);
 
 		if (selectedConfig?.username !== '' || selectedConfig?.password !== '') {
 			if (selectedConfig?.username !== '') {
