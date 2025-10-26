@@ -20,8 +20,57 @@ type QueryBuilderFormula struct {
 	// expression to apply to the query
 	Expression string `json:"expression"`
 
+	Disabled bool `json:"disabled,omitempty"`
+
+	// order by keys and directions
+	Order []OrderBy `json:"order,omitempty"`
+
+	// limit the maximum number of rows to return
+	Limit int `json:"limit,omitempty"`
+
+	// having clause to apply to the formula result
+	Having *Having `json:"having,omitempty"`
+
 	// functions to apply to the formula result
 	Functions []Function `json:"functions,omitempty"`
+
+	Legend string `json:"legend,omitempty"`
+}
+
+// Copy creates a deep copy of the QueryBuilderFormula
+func (f QueryBuilderFormula) Copy() QueryBuilderFormula {
+	c := f
+
+	if f.Order != nil {
+		c.Order = make([]OrderBy, len(f.Order))
+		for i, o := range f.Order {
+			c.Order[i] = o.Copy()
+		}
+	}
+
+	if f.Functions != nil {
+		c.Functions = make([]Function, len(f.Functions))
+		for i, fn := range f.Functions {
+			c.Functions[i] = fn.Copy()
+		}
+	}
+
+	if f.Having != nil {
+		c.Having = f.Having.Copy()
+	}
+
+	return c
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling to disallow unknown fields
+func (f *QueryBuilderFormula) UnmarshalJSON(data []byte) error {
+	type Alias QueryBuilderFormula
+	var temp Alias
+	if err := UnmarshalJSONWithContext(data, &temp, "formula spec"); err != nil {
+		return err
+	}
+	*f = QueryBuilderFormula(temp)
+	return nil
 }
 
 // small container to store the query name and index or alias reference
@@ -496,6 +545,9 @@ func EvalFuncs() map[string]govaluate.ExpressionFunction {
 	rad180 := 180 / math.Pi
 
 	// Mathematical functions
+	funcs["abs"] = func(args ...any) (any, error) {
+		return math.Abs(args[0].(float64)), nil
+	}
 	funcs["exp"] = func(args ...any) (any, error) {
 		return math.Exp(args[0].(float64)), nil
 	}
@@ -574,7 +626,7 @@ func EvalFuncs() map[string]govaluate.ExpressionFunction {
 // GetSupportedFunctions returns the list of supported function names
 func GetSupportedFunctions() []string {
 	return []string{
-		"exp", "log", "ln", "exp2", "log2", "exp10", "log10",
+		"abs", "exp", "log", "ln", "exp2", "log2", "exp10", "log10",
 		"sqrt", "cbrt", "erf", "erfc", "lgamma", "tgamma",
 		"sin", "cos", "tan", "asin", "acos", "atan",
 		"degrees", "radians", "now",

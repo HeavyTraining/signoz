@@ -1,22 +1,23 @@
+import { TelemetryFieldKey } from 'api/v5/v5';
 import { LogViewMode } from 'container/LogsTable';
 import { FontSize } from 'container/OptionsMenu/types';
-import { BaseAutocompleteData } from 'types/api/queryBuilder/queryAutocompleteResponse';
-import { DataSource } from 'types/common/queryBuilder';
 
 export enum PreferenceMode {
 	SAVED_VIEW = 'savedView',
 	DIRECT = 'direct',
 }
 
-export interface PreferenceContextValue {
+export interface PreferenceSlice {
 	preferences: Preferences | null;
 	loading: boolean;
 	error: Error | null;
-	mode: PreferenceMode;
-	savedViewId?: string;
-	dataSource: DataSource;
-	updateColumns: (newColumns: BaseAutocompleteData[]) => void;
+	updateColumns: (newColumns: TelemetryFieldKey[]) => void;
 	updateFormatting: (newFormatting: FormattingOptions) => void;
+}
+
+export interface PreferenceContextValue {
+	logs: PreferenceSlice;
+	traces: PreferenceSlice;
 }
 
 export interface FormattingOptions {
@@ -27,6 +28,6 @@ export interface FormattingOptions {
 }
 
 export interface Preferences {
-	columns: BaseAutocompleteData[];
+	columns: TelemetryFieldKey[];
 	formatting?: FormattingOptions;
 }

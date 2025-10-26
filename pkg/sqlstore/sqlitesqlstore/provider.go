@@ -3,21 +3,23 @@ package sqlitesqlstore
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"net/url"
 
 	"github.com/SigNoz/signoz/pkg/errors"
 	"github.com/SigNoz/signoz/pkg/factory"
 	"github.com/SigNoz/signoz/pkg/sqlstore"
-	"github.com/jmoiron/sqlx"
-	sqlite3 "github.com/mattn/go-sqlite3"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/sqlitedialect"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 type provider struct {
 	settings factory.ScopedProviderSettings
 	sqldb    *sql.DB
 	bundb    *sqlstore.BunDB
-	sqlxdb   *sqlx.DB
 	dialect  *dialect
 }
 
@@ -29,6 +31,7 @@ func NewFactory(hookFactories ...factory.ProviderFactory[sqlstore.SQLStoreHook, 
 			if err != nil {
 				return nil, err
 			}
+
 			hooks[i] = hook
 		}
 
@@ -39,7 +42,12 @@ func NewFactory(hookFactories ...factory.ProviderFactory[sqlstore.SQLStoreHook, 
 func New(ctx context.Context, providerSettings factory.ProviderSettings, config sqlstore.Config, hooks ...sqlstore.SQLStoreHook) (sqlstore.SQLStore, error) {
 	settings := factory.NewScopedProviderSettings(providerSettings, "github.com/SigNoz/signoz/pkg/sqlitesqlstore")
 
-	sqldb, err := sql.Open("sqlite3", "file:"+config.Sqlite.Path+"?_foreign_keys=true")
+	connectionParams := url.Values{}
+	// do not update the order of the connection params as busy_timeout doesn't work if it's not the first parameter
+	connectionParams.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", config.Sqlite.BusyTimeout.Milliseconds()))
+	connectionParams.Add("_pragma", fmt.Sprintf("journal_mode(%s)", config.Sqlite.Mode))
+	connectionParams.Add("_pragma", "foreign_keys(1)")
+	sqldb, err := sql.Open("sqlite", "file:"+config.Sqlite.Path+"?"+connectionParams.Encode())
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +58,6 @@ func New(ctx context.Context, providerSettings factory.ProviderSettings, config 
 		settings: settings,
 		sqldb:    sqldb,
 		bundb:    sqlstore.NewBunDB(settings, sqldb, sqlitedialect.New(), hooks),
-		sqlxdb:   sqlx.NewDb(sqldb, "sqlite3"),
 		dialect:  new(dialect),
 	}, nil
 }
@@ -61,10 +68,6 @@ func (provider *provider) BunDB() *bun.DB {
 
 func (provider *provider) SQLDB() *sql.DB {
 	return provider.sqldb
-}
-
-func (provider *provider) SQLxDB() *sqlx.DB {
-	return provider.sqlxdb
 }
 
 func (provider *provider) Dialect() sqlstore.SQLDialect {
@@ -88,8 +91,8 @@ func (provider *provider) WrapNotFoundErrf(err error, code errors.Code, format s
 }
 
 func (provider *provider) WrapAlreadyExistsErrf(err error, code errors.Code, format string, args ...any) error {
-	if sqlite3Err, ok := err.(sqlite3.Error); ok {
-		if sqlite3Err.ExtendedCode == sqlite3.ErrConstraintUnique {
+	if sqlite3Err, ok := err.(*sqlite.Error); ok {
+		if sqlite3Err.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE || sqlite3Err.Code() == sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY {
 			return errors.Wrapf(err, errors.TypeAlreadyExists, code, format, args...)
 		}
 	}

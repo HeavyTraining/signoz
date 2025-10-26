@@ -1,6 +1,14 @@
 /* eslint-disable react/display-name */
 import { PlusOutlined } from '@ant-design/icons';
-import { Flex, Input, Typography } from 'antd';
+import {
+	Button,
+	Dropdown,
+	Flex,
+	Input,
+	MenuProps,
+	Tag,
+	Typography,
+} from 'antd';
 import type { ColumnsType } from 'antd/es/table/interface';
 import saveAlertApi from 'api/alerts/save';
 import logEvent from 'api/common/logEvent';
@@ -15,6 +23,7 @@ import LabelColumn from 'components/TableRenderer/LabelColumn';
 import TextToolTip from 'components/TextToolTip';
 import { QueryParams } from 'constants/query';
 import ROUTES from 'constants/routes';
+import { sanitizeDefaultAlertQuery } from 'container/EditAlertV2/utils';
 import useSortableTable from 'hooks/ResizeTable/useSortableTable';
 import useComponentPermission from 'hooks/useComponentPermission';
 import useDebouncedFn from 'hooks/useDebouncedFunction';
@@ -28,10 +37,11 @@ import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { UseQueryResult } from 'react-query';
 import { ErrorResponse, SuccessResponse } from 'types/api';
+import { AlertTypes } from 'types/api/alerts/alertTypes';
 import { GettableAlert } from 'types/api/alerts/get';
 
 import DeleteAlert from './DeleteAlert';
-import { Button, ColumnButton, SearchContainer } from './styles';
+import { ColumnButton, SearchContainer } from './styles';
 import Status from './TableComponents/Status';
 import ToggleAlertState from './ToggleAlertState';
 import { alertActionLogEvent, filterAlerts } from './utils';
@@ -97,16 +107,46 @@ function ListAlert({ allAlertRules, refetch }: ListAlertProps): JSX.Element {
 		});
 	}, [notificationsApi, t]);
 
-	const onClickNewAlertHandler = useCallback(() => {
+	const onClickNewAlertV2Handler = useCallback(() => {
 		logEvent('Alert: New alert button clicked', {
 			number: allAlertRules?.length,
+			layout: 'new',
+		});
+		history.push(`${ROUTES.ALERTS_NEW}?showNewCreateAlertsPage=true`);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
+	const onClickNewClassicAlertHandler = useCallback(() => {
+		logEvent('Alert: New alert button clicked', {
+			number: allAlertRules?.length,
+			layout: 'classic',
 		});
 		history.push(ROUTES.ALERTS_NEW);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
-	const onEditHandler = (record: GettableAlert) => (): void => {
-		const compositeQuery = mapQueryDataFromApi(record.condition.compositeQuery);
+	const newAlertMenuItems: MenuProps['items'] = [
+		{
+			key: 'new',
+			label: (
+				<span>
+					Try the new experience <Tag color="blue">Beta</Tag>
+				</span>
+			),
+			onClick: onClickNewAlertV2Handler,
+		},
+		{
+			key: 'classic',
+			label: 'Continue with the classic experience',
+			onClick: onClickNewClassicAlertHandler,
+		},
+	];
+
+	const onEditHandler = (record: GettableAlert, openInNewTab: boolean): void => {
+		const compositeQuery = sanitizeDefaultAlertQuery(
+			mapQueryDataFromApi(record.condition.compositeQuery),
+			record.alertType as AlertTypes,
+		);
 		params.set(
 			QueryParams.compositeQuery,
 			encodeURIComponent(JSON.stringify(compositeQuery)),
@@ -117,7 +157,12 @@ function ListAlert({ allAlertRules, refetch }: ListAlertProps): JSX.Element {
 		params.set(QueryParams.ruleId, record.id.toString());
 
 		setEditLoader(false);
-		history.push(`${ROUTES.ALERT_OVERVIEW}?${params.toString()}`);
+
+		if (openInNewTab) {
+			window.open(`${ROUTES.ALERT_OVERVIEW}?${params.toString()}`, '_blank');
+		} else {
+			history.push(`${ROUTES.ALERT_OVERVIEW}?${params.toString()}`);
+		}
 	};
 
 	const onCloneHandler = (
@@ -250,9 +295,15 @@ function ListAlert({ allAlertRules, refetch }: ListAlertProps): JSX.Element {
 				}
 				return 0;
 			},
-			render: (value, record): JSX.Element => (
-				<Typography.Link onClick={onEditHandler(record)}>{value}</Typography.Link>
-			),
+			render: (value, record): JSX.Element => {
+				const onClickHandler = (e: React.MouseEvent<HTMLElement>): void => {
+					e.stopPropagation();
+					e.preventDefault();
+					onEditHandler(record, e.metaKey || e.ctrlKey);
+				};
+
+				return <Typography.Link onClick={onClickHandler}>{value}</Typography.Link>;
+			},
 			sortOrder: sortedInfo.columnKey === 'name' ? sortedInfo.order : null,
 		},
 		{
@@ -261,12 +312,11 @@ function ListAlert({ allAlertRules, refetch }: ListAlertProps): JSX.Element {
 			width: 80,
 			key: 'severity',
 			sorter: (a, b): number =>
-				(a.labels ? a.labels.severity.length : 0) -
-				(b.labels ? b.labels.severity.length : 0),
+				(a?.labels?.severity?.length || 0) - (b?.labels?.severity?.length || 0),
 			render: (value): JSX.Element => {
-				const objectKeys = Object.keys(value);
+				const objectKeys = value ? Object.keys(value) : [];
 				const withSeverityKey = objectKeys.find((e) => e === 'severity') || '';
-				const severityValue = value[withSeverityKey];
+				const severityValue = withSeverityKey ? value[withSeverityKey] : '-';
 
 				return <Typography>{severityValue}</Typography>;
 			},
@@ -279,7 +329,7 @@ function ListAlert({ allAlertRules, refetch }: ListAlertProps): JSX.Element {
 			align: 'center',
 			width: 100,
 			render: (value): JSX.Element => {
-				const objectKeys = Object.keys(value);
+				const objectKeys = value ? Object.keys(value) : [];
 				const withOutSeverityKeys = objectKeys.filter((e) => e !== 'severity');
 
 				if (withOutSeverityKeys.length === 0) {
@@ -311,11 +361,19 @@ function ListAlert({ allAlertRules, refetch }: ListAlertProps): JSX.Element {
 						/>,
 						<ColumnButton
 							key="2"
-							onClick={onEditHandler(record)}
+							onClick={(): void => onEditHandler(record, false)}
 							type="link"
 							loading={editLoader}
 						>
 							Edit
+						</ColumnButton>,
+						<ColumnButton
+							key="3"
+							onClick={(): void => onEditHandler(record, true)}
+							type="link"
+							loading={editLoader}
+						>
+							Edit in New Tab
 						</ColumnButton>,
 						<ColumnButton
 							key="3"
@@ -341,7 +399,7 @@ function ListAlert({ allAlertRules, refetch }: ListAlertProps): JSX.Element {
 		defaultCurrent: Number(paginationParam) || 1,
 	};
 	return (
-		<>
+		<div className="alert-rules-list-container">
 			<SearchContainer>
 				<Search
 					placeholder="Search by Alert Name, Severity and Labels"
@@ -350,13 +408,11 @@ function ListAlert({ allAlertRules, refetch }: ListAlertProps): JSX.Element {
 				/>
 				<Flex gap={12}>
 					{addNewAlert && (
-						<Button
-							type="primary"
-							onClick={onClickNewAlertHandler}
-							icon={<PlusOutlined />}
-						>
-							New Alert
-						</Button>
+						<Dropdown menu={{ items: newAlertMenuItems }} trigger={['click']}>
+							<Button type="primary" icon={<PlusOutlined />}>
+								New Alert
+							</Button>
+						</Dropdown>
 					)}
 					<TextToolTip
 						{...{
@@ -378,7 +434,7 @@ function ListAlert({ allAlertRules, refetch }: ListAlertProps): JSX.Element {
 				onChange={handleChange}
 				pagination={paginationConfig}
 			/>
-		</>
+		</div>
 	);
 }
 

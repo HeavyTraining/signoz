@@ -6,20 +6,6 @@ import { findByText, fireEvent, render, waitFor } from 'tests/test-utils';
 import { pipelineApiResponseMockData } from '../mocks/pipeline';
 import PipelineListsView from '../PipelineListsView';
 
-jest.mock('uplot', () => {
-	const paths = {
-		spline: jest.fn(),
-		bars: jest.fn(),
-	};
-	const uplotMock = jest.fn(() => ({
-		paths,
-	}));
-	return {
-		paths,
-		default: uplotMock,
-	};
-});
-
 // Mock useUrlQuery hook
 const mockUrlQuery = {
 	get: jest.fn(),
@@ -192,7 +178,7 @@ describe('PipelinePage container test', () => {
 			'.ant-table-expanded-row [data-icon="delete"]',
 		);
 
-		expect(deleteBtns.length).toBe(2);
+		expect(deleteBtns.length).toBe(3);
 
 		// delete pipeline
 		await fireEvent.click(deleteBtns[0] as HTMLElement);
@@ -213,7 +199,7 @@ describe('PipelinePage container test', () => {
 		expect(
 			document.querySelectorAll('.ant-table-expanded-row [data-icon="delete"]')
 				.length,
-		).toBe(1);
+		).toBe(2);
 	});
 
 	it('should be able to toggle and delete pipeline', async () => {

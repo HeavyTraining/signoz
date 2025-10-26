@@ -13,11 +13,11 @@ import (
 	"github.com/SigNoz/signoz/ee/query-service/constants"
 	"github.com/SigNoz/signoz/pkg/errors"
 	"github.com/SigNoz/signoz/pkg/http/render"
+	"github.com/SigNoz/signoz/pkg/modules/user"
 	basemodel "github.com/SigNoz/signoz/pkg/query-service/model"
 	"github.com/SigNoz/signoz/pkg/types"
 	"github.com/SigNoz/signoz/pkg/types/authtypes"
 	"github.com/SigNoz/signoz/pkg/valuer"
-	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"go.uber.org/zap"
 )
@@ -168,38 +168,22 @@ func (ah *APIHandler) getOrCreateCloudIntegrationPAT(ctx context.Context, orgId 
 func (ah *APIHandler) getOrCreateCloudIntegrationUser(
 	ctx context.Context, orgId string, cloudProvider string,
 ) (*types.User, *basemodel.ApiError) {
-	cloudIntegrationUser := fmt.Sprintf("%s-integration", cloudProvider)
-	email := fmt.Sprintf("%s@signoz.io", cloudIntegrationUser)
+	cloudIntegrationUserName := fmt.Sprintf("%s-integration", cloudProvider)
+	email := valuer.MustNewEmail(fmt.Sprintf("%s@signoz.io", cloudIntegrationUserName))
 
-	integrationUserResult, err := ah.Signoz.Modules.User.GetUserByEmailInOrg(ctx, orgId, email)
-	if err != nil && !errors.Ast(err, errors.TypeNotFound) {
-		return nil, basemodel.NotFoundError(fmt.Errorf("couldn't look for integration user: %w", err))
-	}
-
-	if integrationUserResult != nil {
-		return &integrationUserResult.User, nil
-	}
-
-	zap.L().Info(
-		"cloud integration user not found. Attempting to create the user",
-		zap.String("cloudProvider", cloudProvider),
-	)
-
-	newUser, err := types.NewUser(cloudIntegrationUser, email, types.RoleViewer.String(), orgId)
-	if err != nil {
-		return nil, basemodel.InternalError(fmt.Errorf(
-			"couldn't create cloud integration user: %w", err,
-		))
-	}
-
-	password, err := types.NewFactorPassword(uuid.NewString())
-
-	integrationUser, err := ah.Signoz.Modules.User.CreateUserWithPassword(ctx, newUser, password)
+	cloudIntegrationUser, err := types.NewUser(cloudIntegrationUserName, email, types.RoleViewer, valuer.MustNewUUID(orgId))
 	if err != nil {
 		return nil, basemodel.InternalError(fmt.Errorf("couldn't create cloud integration user: %w", err))
 	}
 
-	return integrationUser, nil
+	password := types.MustGenerateFactorPassword(cloudIntegrationUser.ID.StringValue())
+
+	cloudIntegrationUser, err = ah.Signoz.Modules.User.GetOrCreateUser(ctx, cloudIntegrationUser, user.WithFactorPassword(password))
+	if err != nil {
+		return nil, basemodel.InternalError(fmt.Errorf("couldn't look for integration user: %w", err))
+	}
+
+	return cloudIntegrationUser, nil
 }
 
 func getIngestionUrlAndSigNozAPIUrl(ctx context.Context, licenseKey string) (

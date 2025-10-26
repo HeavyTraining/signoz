@@ -1,14 +1,18 @@
 import './DashboardVariableSelection.styles.scss';
 
-import { Alert, Row } from 'antd';
+import { Row } from 'antd';
+import { ALL_SELECTED_VALUE } from 'components/NewSelect/utils';
+import useVariablesFromUrl from 'hooks/dashboard/useVariablesFromUrl';
 import { isEmpty } from 'lodash-es';
 import { useDashboard } from 'providers/Dashboard/Dashboard';
+import { initializeDefaultVariables } from 'providers/Dashboard/initializeDefaultVariables';
 import { memo, useEffect, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { AppState } from 'store/reducers';
 import { IDashboardVariable } from 'types/api/dashboard/getAll';
 import { GlobalReducer } from 'types/reducer/globalTime';
 
+import DynamicVariableSelection from './DynamicVariableSelection';
 import {
 	buildDependencies,
 	buildDependencyGraph,
@@ -26,6 +30,8 @@ function DashboardVariableSelection(): JSX.Element | null {
 		variablesToGetUpdated,
 		setVariablesToGetUpdated,
 	} = useDashboard();
+
+	const { updateUrlVariable, getUrlVariables } = useVariablesFromUrl();
 
 	const { data } = selectedDashboard || {};
 
@@ -60,8 +66,11 @@ function DashboardVariableSelection(): JSX.Element | null {
 			tableRowData.sort((a, b) => a.order - b.order);
 
 			setVariablesTableData(tableRowData);
+
+			// Initialize variables with default values if not in URL
+			initializeDefaultVariables(variables, getUrlVariables, updateUrlVariable);
 		}
-	}, [variables]);
+	}, [getUrlVariables, updateUrlVariable, variables]);
 
 	useEffect(() => {
 		if (variablesTableData.length > 0) {
@@ -99,16 +108,29 @@ function DashboardVariableSelection(): JSX.Element | null {
 		[JSON.stringify(dependencyData?.order), minTime, maxTime],
 	);
 
+	// Performance optimization: For dynamic variables with allSelected=true, we don't store
+	// individual values in localStorage since we can always derive them from available options.
+	// This makes localStorage much lighter and more efficient.
 	const onValueUpdate = (
 		name: string,
 		id: string,
 		value: IDashboardVariable['selectedValue'],
 		allSelected: boolean,
-		// isMountedCall?: boolean,
+		haveCustomValuesSelected?: boolean,
 		// eslint-disable-next-line sonarjs/cognitive-complexity
 	): void => {
 		if (id) {
-			updateLocalStorageDashboardVariables(name, value, allSelected);
+			// For dynamic variables, only store in localStorage when NOT allSelected
+			// This makes localStorage much lighter by avoiding storing all individual values
+			const variable = variables?.[id] || variables?.[name];
+			const isDynamic = variable?.type === 'DYNAMIC';
+			updateLocalStorageDashboardVariables(name, value, allSelected, isDynamic);
+
+			if (allSelected) {
+				updateUrlVariable(name || id, ALL_SELECTED_VALUE);
+			} else {
+				updateUrlVariable(name || id, value);
+			}
 
 			if (selectedDashboard) {
 				setSelectedDashboard((prev) => {
@@ -121,6 +143,7 @@ function DashboardVariableSelection(): JSX.Element | null {
 								...oldVariables[id],
 								selectedValue: value,
 								allSelected,
+								haveCustomValuesSelected,
 							};
 						}
 						if (oldVariables?.[name]) {
@@ -128,6 +151,7 @@ function DashboardVariableSelection(): JSX.Element | null {
 								...oldVariables[name],
 								selectedValue: value,
 								allSelected,
+								haveCustomValuesSelected,
 							};
 						}
 						return {
@@ -170,22 +194,22 @@ function DashboardVariableSelection(): JSX.Element | null {
 	);
 
 	return (
-		<>
-			{dependencyData?.hasCycle && (
-				<Alert
-					message={`Circular dependency detected: ${dependencyData?.cycleNodes?.join(
-						' → ',
-					)}`}
-					type="error"
-					showIcon
-					className="cycle-error-alert"
-				/>
-			)}
-			<Row style={{ display: 'flex', gap: '12px' }}>
-				{orderBasedSortedVariables &&
-					Array.isArray(orderBasedSortedVariables) &&
-					orderBasedSortedVariables.length > 0 &&
-					orderBasedSortedVariables.map((variable) => (
+		<Row style={{ display: 'flex', gap: '12px' }}>
+			{orderBasedSortedVariables &&
+				Array.isArray(orderBasedSortedVariables) &&
+				orderBasedSortedVariables.length > 0 &&
+				orderBasedSortedVariables.map((variable) =>
+					variable.type === 'DYNAMIC' ? (
+						<DynamicVariableSelection
+							key={`${variable.name}${variable.id}${variable.order}`}
+							existingVariables={variables}
+							variableData={{
+								name: variable.name,
+								...variable,
+							}}
+							onValueUpdate={onValueUpdate}
+						/>
+					) : (
 						<VariableItem
 							key={`${variable.name}${variable.id}}${variable.order}`}
 							existingVariables={variables}
@@ -198,9 +222,9 @@ function DashboardVariableSelection(): JSX.Element | null {
 							setVariablesToGetUpdated={setVariablesToGetUpdated}
 							dependencyData={dependencyData}
 						/>
-					))}
-			</Row>
-		</>
+					),
+				)}
+		</Row>
 	);
 }
 

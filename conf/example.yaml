@@ -1,5 +1,5 @@
 ##################### SigNoz Configuration Example #####################
-# 
+#
 # Do not modify this file
 #
 
@@ -58,7 +58,7 @@ cache:
     # The port on which the Redis server is running. Default is usually 6379.
     port: 6379
     # The password for authenticating with the Redis server, if required.
-    password: 
+    password:
     # The Redis database number to use
     db: 0
 
@@ -71,6 +71,10 @@ sqlstore:
   sqlite:
     # The path to the SQLite database file.
     path: /var/lib/signoz/signoz.db
+    # Mode is the mode to use for the sqlite database.
+    mode: delete
+    # BusyTimeout is the timeout for the sqlite database to wait for a lock.
+    busy_timeout: 10s
 
 ##################### APIServer #####################
 apiserver:
@@ -90,6 +94,15 @@ apiserver:
       - /api/v1/version
       - /
 
+##################### Querier #####################
+querier:
+  # The TTL for cached query results.
+  cache_ttl: 168h
+  # The interval for recent data that should not be cached.
+  flux_interval: 5m
+  # The maximum number of concurrent queries for missing ranges.
+  max_concurrent_queries: 4
+
 ##################### TelemetryStore #####################
 telemetrystore:
   # Maximum number of idle connections in the connection pool.
@@ -103,13 +116,17 @@ telemetrystore:
   clickhouse:
     # The DSN to use for clickhouse.
     dsn: tcp://localhost:9000
+    # The cluster name to use for clickhouse.
+    cluster: cluster
     # The query settings for clickhouse.
     settings:
       max_execution_time: 0
       max_execution_time_leaf: 0
       timeout_before_checking_execution_speed: 0
       max_bytes_to_read: 0
-      max_result_rows_for_ch_query: 0
+      max_result_rows: 0
+      ignore_data_skipping_indices: ""
+      secondary_indices_enable_bulk_filtering: false
 
 ##################### Prometheus #####################
 prometheus:
@@ -124,10 +141,7 @@ prometheus:
 ##################### Alertmanager #####################
 alertmanager:
   # Specifies the alertmanager provider to use.
-  provider: legacy
-  legacy:
-    # The API URL (with prefix) of the legacy Alertmanager instance.
-    api_url: http://localhost:9093/api
+  provider: signoz
   signoz:
     # The poll interval for periodically syncing the alertmanager with the config in the store.
     poll_interval: 1m
@@ -224,3 +238,36 @@ statsreporter:
   enabled: true
   # The interval at which the stats are collected.
   interval: 6h
+  collect:
+    # Whether to collect identities and traits (emails).
+    identities: true
+
+##################### Gateway (License only) #####################
+gateway:
+  # The URL of the gateway's api.
+  url: http://localhost:8080
+
+##################### Tokenizer #####################
+tokenizer:
+  # Specifies the tokenizer provider to use.
+  provider: jwt
+  lifetime:
+    # The duration for which a user can be idle before being required to authenticate.
+    idle: 168h
+    # The duration for which a user can remain logged in before being asked to login.
+    max: 720h
+  rotation:
+    # The interval to rotate tokens in.
+    interval: 30m
+    # The duration for which the previous token pair remains valid after a token pair is rotated.
+    duration: 60s
+  jwt:
+    # The secret to sign the JWT tokens.
+    secret: secret
+  opaque:
+    gc:
+      # The interval to perform garbage collection.
+      interval: 1h
+    token:
+      # The maximum number of tokens a user can have. This limits the number of concurrent sessions a user can have.
+      max_per_user: 5

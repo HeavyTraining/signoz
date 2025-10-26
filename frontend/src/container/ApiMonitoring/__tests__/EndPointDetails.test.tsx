@@ -22,6 +22,7 @@ import EndPointDetails from '../Explorer/Domains/DomainDetails/EndPointDetails';
 
 // Mock dependencies
 jest.mock('react-query', () => ({
+	...jest.requireActual('react-query'),
 	useQueries: jest.fn(),
 }));
 
@@ -76,8 +77,6 @@ jest.mock(
 										key: 'test.key',
 										dataType: DataTypes.String,
 										type: 'tag',
-										isColumn: false,
-										isJSON: false,
 									},
 									op: '=',
 									value: 'test-value',
@@ -335,8 +334,6 @@ describe('EndPointDetails Component', () => {
 							key: 'service.name',
 							dataType: DataTypes.String,
 							type: 'tag',
-							isColumn: false,
-							isJSON: false,
 						},
 						op: '=',
 						value: 'test-service',

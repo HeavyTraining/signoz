@@ -11,6 +11,7 @@ import (
 	"github.com/SigNoz/signoz/pkg/querybuilder/resourcefilter"
 	"github.com/SigNoz/signoz/pkg/telemetrylogs"
 	"github.com/SigNoz/signoz/pkg/telemetrymetadata"
+	"github.com/SigNoz/signoz/pkg/telemetrymeter"
 	"github.com/SigNoz/signoz/pkg/telemetrymetrics"
 	"github.com/SigNoz/signoz/pkg/telemetrystore"
 	"github.com/SigNoz/signoz/pkg/telemetrytraces"
@@ -49,12 +50,17 @@ func newProvider(
 		telemetryStore,
 		telemetrytraces.DBName,
 		telemetrytraces.TagAttributesV2TableName,
+		telemetrytraces.SpanAttributesKeysTblName,
 		telemetrytraces.SpanIndexV3TableName,
 		telemetrymetrics.DBName,
 		telemetrymetrics.AttributesMetadataTableName,
+		telemetrymeter.DBName,
+		telemetrymeter.SamplesAgg1dTableName,
 		telemetrylogs.DBName,
 		telemetrylogs.LogsV2TableName,
 		telemetrylogs.TagAttributesV2TableName,
+		telemetrylogs.LogAttributeKeysTblName,
+		telemetrylogs.LogResourceKeysTblName,
 		telemetrymetadata.DBName,
 		telemetrymetadata.AttributesMetadataLocalTableName,
 	)
@@ -66,12 +72,13 @@ func newProvider(
 	resourceFilterFieldMapper := resourcefilter.NewFieldMapper()
 	resourceFilterConditionBuilder := resourcefilter.NewConditionBuilder(resourceFilterFieldMapper)
 	resourceFilterStmtBuilder := resourcefilter.NewTraceResourceFilterStatementBuilder(
+		settings,
 		resourceFilterFieldMapper,
 		resourceFilterConditionBuilder,
 		telemetryMetadataStore,
 	)
 
-	traceAggExprRewriter := querybuilder.NewAggExprRewriter(nil, traceFieldMapper, traceConditionBuilder, "", nil)
+	traceAggExprRewriter := querybuilder.NewAggExprRewriter(settings, nil, traceFieldMapper, traceConditionBuilder, "", nil)
 	traceStmtBuilder := telemetrytraces.NewTraceQueryStatementBuilder(
 		settings,
 		telemetryMetadataStore,
@@ -79,17 +86,34 @@ func newProvider(
 		traceConditionBuilder,
 		resourceFilterStmtBuilder,
 		traceAggExprRewriter,
+		telemetryStore,
+	)
+
+	// ADD: Create trace operator statement builder
+	traceOperatorStmtBuilder := telemetrytraces.NewTraceOperatorStatementBuilder(
+		settings,
+		telemetryMetadataStore,
+		traceFieldMapper,
+		traceConditionBuilder,
+		traceStmtBuilder,          // Pass the regular trace statement builder
+		resourceFilterStmtBuilder, // Pass the resource filter statement builder
+		traceAggExprRewriter,
 	)
 
 	// Create log statement builder
 	logFieldMapper := telemetrylogs.NewFieldMapper()
 	logConditionBuilder := telemetrylogs.NewConditionBuilder(logFieldMapper)
 	logResourceFilterStmtBuilder := resourcefilter.NewLogResourceFilterStatementBuilder(
+		settings,
 		resourceFilterFieldMapper,
 		resourceFilterConditionBuilder,
 		telemetryMetadataStore,
+		telemetrylogs.DefaultFullTextColumn,
+		telemetrylogs.BodyJSONStringSearchPrefix,
+		telemetrylogs.GetBodyJSONKey,
 	)
 	logAggExprRewriter := querybuilder.NewAggExprRewriter(
+		settings,
 		telemetrylogs.DefaultFullTextColumn,
 		logFieldMapper,
 		logConditionBuilder,
@@ -118,6 +142,14 @@ func newProvider(
 		metricConditionBuilder,
 	)
 
+	// Create meter statement builder
+	meterStmtBuilder := telemetrymeter.NewMeterQueryStatementBuilder(
+		settings,
+		telemetryMetadataStore,
+		metricFieldMapper,
+		metricConditionBuilder,
+	)
+
 	// Create bucket cache
 	bucketCache := querier.NewBucketCache(
 		settings,
@@ -135,6 +167,8 @@ func newProvider(
 		traceStmtBuilder,
 		logStmtBuilder,
 		metricStmtBuilder,
+		meterStmtBuilder,
+		traceOperatorStmtBuilder,
 		bucketCache,
 	), nil
 }

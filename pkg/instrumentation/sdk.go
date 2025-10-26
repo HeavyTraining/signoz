@@ -4,14 +4,17 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/SigNoz/signoz/pkg/errors"
 	"github.com/SigNoz/signoz/pkg/factory"
+	"github.com/SigNoz/signoz/pkg/instrumentation/loghandler"
 	"github.com/SigNoz/signoz/pkg/version"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	contribsdkconfig "go.opentelemetry.io/contrib/config"
 	sdkmetric "go.opentelemetry.io/otel/metric"
+	sdkmetricnoop "go.opentelemetry.io/otel/metric/noop"
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
 	sdktrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -20,10 +23,12 @@ var _ Instrumentation = (*SDK)(nil)
 
 // SDK holds the core components for application instrumentation.
 type SDK struct {
-	logger             *slog.Logger
-	sdk                contribsdkconfig.SDK
-	prometheusRegistry *prometheus.Registry
-	startCh            chan struct{}
+	logger                    *slog.Logger
+	sdk                       contribsdkconfig.SDK
+	meterProvider             sdkmetric.MeterProvider
+	prometheusRegistry        *prometheus.Registry
+	meterProviderShutdownFunc func(context.Context) error
+	startCh                   chan struct{}
 }
 
 // New creates a new Instrumentation instance with configured providers.
@@ -59,6 +64,9 @@ func New(ctx context.Context, cfg Config, build version.Build, serviceName strin
 		SchemaUrl:  &sch,
 	}
 
+	prometheusRegistry := prometheus.NewRegistry()
+	prometheusRegistry.MustRegister(collectors.NewBuildInfoCollector())
+
 	var tracerProvider *contribsdkconfig.TracerProvider
 	if cfg.Traces.Enabled {
 		tracerProvider = &contribsdkconfig.TracerProvider{
@@ -69,20 +77,29 @@ func New(ctx context.Context, cfg Config, build version.Build, serviceName strin
 		}
 	}
 
-	var meterProvider *contribsdkconfig.MeterProvider
+	// Use contrib config approach but with custom Prometheus registry
+	var meterProvider sdkmetric.MeterProvider
+	var meterProviderShutdownFunc func(context.Context) error
 	if cfg.Metrics.Enabled {
-		meterProvider = &contribsdkconfig.MeterProvider{
+		meterProviderConfig := &contribsdkconfig.MeterProvider{
 			Readers: []contribsdkconfig.MetricReader{
 				{Pull: &cfg.Metrics.Readers.Pull},
 			},
 		}
+
+		meterProvider, meterProviderShutdownFunc, err = meterProviderWithCustomRegistry(ctx, meterProviderConfig, resource, prometheusRegistry)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		meterProvider = sdkmetricnoop.NewMeterProvider()
+		meterProviderShutdownFunc = func(context.Context) error { return nil }
 	}
 
 	sdk, err := contribsdkconfig.NewSDK(
 		contribsdkconfig.WithContext(ctx),
 		contribsdkconfig.WithOpenTelemetryConfiguration(contribsdkconfig.OpenTelemetryConfiguration{
 			TracerProvider: tracerProvider,
-			MeterProvider:  meterProvider,
 			Resource:       &configResource,
 		}),
 	)
@@ -90,14 +107,13 @@ func New(ctx context.Context, cfg Config, build version.Build, serviceName strin
 		return nil, err
 	}
 
-	prometheusRegistry := prometheus.NewRegistry()
-	prometheusRegistry.MustRegister(collectors.NewBuildInfoCollector())
-
 	return &SDK{
-		sdk:                sdk,
-		prometheusRegistry: prometheusRegistry,
-		logger:             NewLogger(cfg),
-		startCh:            make(chan struct{}),
+		sdk:                       sdk,
+		meterProvider:             meterProvider,
+		meterProviderShutdownFunc: meterProviderShutdownFunc,
+		prometheusRegistry:        prometheusRegistry,
+		logger:                    NewLogger(cfg, loghandler.NewCorrelation()),
+		startCh:                   make(chan struct{}),
 	}, nil
 }
 
@@ -108,7 +124,10 @@ func (i *SDK) Start(ctx context.Context) error {
 
 func (i *SDK) Stop(ctx context.Context) error {
 	close(i.startCh)
-	return i.sdk.Shutdown(ctx)
+	return errors.Join(
+		i.sdk.Shutdown(ctx),
+		i.meterProviderShutdownFunc(ctx),
+	)
 }
 
 func (i *SDK) Logger() *slog.Logger {
@@ -116,7 +135,7 @@ func (i *SDK) Logger() *slog.Logger {
 }
 
 func (i *SDK) MeterProvider() sdkmetric.MeterProvider {
-	return i.sdk.MeterProvider()
+	return i.meterProvider
 }
 
 func (i *SDK) TracerProvider() sdktrace.TracerProvider {

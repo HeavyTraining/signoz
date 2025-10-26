@@ -2,18 +2,18 @@ package rediscache
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"time"
 
 	"fmt"
 
 	"github.com/SigNoz/signoz/pkg/cache"
-	errorsV2 "github.com/SigNoz/signoz/pkg/errors"
+	"github.com/SigNoz/signoz/pkg/errors"
 	"github.com/SigNoz/signoz/pkg/factory"
 	"github.com/SigNoz/signoz/pkg/types/cachetypes"
 	"github.com/SigNoz/signoz/pkg/valuer"
-	"github.com/go-redis/redis/v8"
+	"github.com/redis/go-redis/extra/redisotel/v9"
+	"github.com/redis/go-redis/v9"
 )
 
 type provider struct {
@@ -37,6 +37,14 @@ func New(ctx context.Context, providerSettings factory.ProviderSettings, config 
 		return nil, err
 	}
 
+	if err := redisotel.InstrumentTracing(client, redisotel.WithTracerProvider(providerSettings.TracerProvider), redisotel.WithDBStatement(true)); err != nil {
+		return nil, err
+	}
+
+	if err := redisotel.InstrumentMetrics(client, redisotel.WithMeterProvider(providerSettings.MeterProvider)); err != nil {
+		return nil, err
+	}
+
 	return &provider{client: client, settings: settings}, nil
 }
 
@@ -48,10 +56,12 @@ func (c *provider) Get(ctx context.Context, orgID valuer.UUID, cacheKey string, 
 	err := c.client.Get(ctx, strings.Join([]string{orgID.StringValue(), cacheKey}, "::")).Scan(dest)
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return errorsV2.Newf(errorsV2.TypeNotFound, errorsV2.CodeNotFound, "key miss")
+			return errors.Newf(errors.TypeNotFound, errors.CodeNotFound, "key miss")
 		}
+
 		return err
 	}
+
 	return nil
 }
 

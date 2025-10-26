@@ -3,8 +3,10 @@ package resourcefilter
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/SigNoz/signoz/pkg/errors"
+	"github.com/SigNoz/signoz/pkg/factory"
 	"github.com/SigNoz/signoz/pkg/querybuilder"
 	qbtypes "github.com/SigNoz/signoz/pkg/types/querybuildertypes/querybuildertypesv5"
 	"github.com/SigNoz/signoz/pkg/types/telemetrytypes"
@@ -34,10 +36,15 @@ var signalConfigs = map[telemetrytypes.Signal]signalConfig{
 
 // Generic resource filter statement builder
 type resourceFilterStatementBuilder[T any] struct {
+	logger           *slog.Logger
 	fieldMapper      qbtypes.FieldMapper
 	conditionBuilder qbtypes.ConditionBuilder
 	metadataStore    telemetrytypes.MetadataStore
 	signal           telemetrytypes.Signal
+
+	fullTextColumn *telemetrytypes.TelemetryFieldKey
+	jsonBodyPrefix string
+	jsonKeyToKey   qbtypes.JsonKeyToFieldFunc
 }
 
 // Ensure interface compliance at compile time
@@ -48,11 +55,14 @@ var (
 
 // Constructor functions
 func NewTraceResourceFilterStatementBuilder(
+	settings factory.ProviderSettings,
 	fieldMapper qbtypes.FieldMapper,
 	conditionBuilder qbtypes.ConditionBuilder,
 	metadataStore telemetrytypes.MetadataStore,
 ) *resourceFilterStatementBuilder[qbtypes.TraceAggregation] {
+	set := factory.NewScopedProviderSettings(settings, "github.com/SigNoz/signoz/pkg/querybuilder/resourcefilter")
 	return &resourceFilterStatementBuilder[qbtypes.TraceAggregation]{
+		logger:           set.Logger(),
 		fieldMapper:      fieldMapper,
 		conditionBuilder: conditionBuilder,
 		metadataStore:    metadataStore,
@@ -61,15 +71,24 @@ func NewTraceResourceFilterStatementBuilder(
 }
 
 func NewLogResourceFilterStatementBuilder(
+	settings factory.ProviderSettings,
 	fieldMapper qbtypes.FieldMapper,
 	conditionBuilder qbtypes.ConditionBuilder,
 	metadataStore telemetrytypes.MetadataStore,
+	fullTextColumn *telemetrytypes.TelemetryFieldKey,
+	jsonBodyPrefix string,
+	jsonKeyToKey qbtypes.JsonKeyToFieldFunc,
 ) *resourceFilterStatementBuilder[qbtypes.LogAggregation] {
+	set := factory.NewScopedProviderSettings(settings, "github.com/SigNoz/signoz/pkg/querybuilder/resourcefilter")
 	return &resourceFilterStatementBuilder[qbtypes.LogAggregation]{
+		logger:           set.Logger(),
 		fieldMapper:      fieldMapper,
 		conditionBuilder: conditionBuilder,
 		metadataStore:    metadataStore,
 		signal:           telemetrytypes.SignalLogs,
+		fullTextColumn:   fullTextColumn,
+		jsonBodyPrefix:   jsonBodyPrefix,
+		jsonKeyToKey:     jsonKeyToKey,
 	}
 }
 
@@ -83,6 +102,7 @@ func (b *resourceFilterStatementBuilder[T]) getKeySelectors(query qbtypes.QueryB
 
 	for idx := range keySelectors {
 		keySelectors[idx].Signal = b.signal
+		keySelectors[idx].SelectorMatchType = telemetrytypes.FieldSelectorMatchTypeExact
 	}
 
 	return keySelectors
@@ -95,6 +115,7 @@ func (b *resourceFilterStatementBuilder[T]) Build(
 	end uint64,
 	requestType qbtypes.RequestType,
 	query qbtypes.QueryBuilderQuery[T],
+	variables map[string]qbtypes.VariableItem,
 ) (*qbtypes.Statement, error) {
 	config, exists := signalConfigs[b.signal]
 	if !exists {
@@ -106,12 +127,12 @@ func (b *resourceFilterStatementBuilder[T]) Build(
 	q.From(fmt.Sprintf("%s.%s", config.dbName, config.tableName))
 
 	keySelectors := b.getKeySelectors(query)
-	keys, err := b.metadataStore.GetKeysMulti(ctx, keySelectors)
+	keys, _, err := b.metadataStore.GetKeysMulti(ctx, keySelectors)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := b.addConditions(ctx, q, start, end, query, keys); err != nil {
+	if err := b.addConditions(ctx, q, start, end, query, keys, variables); err != nil {
 		return nil, err
 	}
 
@@ -129,23 +150,32 @@ func (b *resourceFilterStatementBuilder[T]) addConditions(
 	start, end uint64,
 	query qbtypes.QueryBuilderQuery[T],
 	keys map[string][]*telemetrytypes.TelemetryFieldKey,
+	variables map[string]qbtypes.VariableItem,
 ) error {
 	// Add filter condition if present
 	if query.Filter != nil && query.Filter.Expression != "" {
 
 		// warnings would be encountered as part of the main condition already
-		filterWhereClause, _, err := querybuilder.PrepareWhereClause(query.Filter.Expression, querybuilder.FilterExprVisitorOpts{
+		filterWhereClause, err := querybuilder.PrepareWhereClause(query.Filter.Expression, querybuilder.FilterExprVisitorOpts{
+			Logger:             b.logger,
 			FieldMapper:        b.fieldMapper,
 			ConditionBuilder:   b.conditionBuilder,
 			FieldKeys:          keys,
+			FullTextColumn:     b.fullTextColumn,
+			JsonBodyPrefix:     b.jsonBodyPrefix,
+			JsonKeyToKey:       b.jsonKeyToKey,
 			SkipFullTextFilter: true,
+			SkipFunctionCalls:  true,
+			// there is no need for "key" not found error for resource filtering
+			IgnoreNotFoundKeys: true,
+			Variables:          variables,
 		})
 
 		if err != nil {
 			return err
 		}
 		if filterWhereClause != nil {
-			sb.AddWhereClause(filterWhereClause)
+			sb.AddWhereClause(filterWhereClause.WhereClause)
 		}
 	}
 
@@ -157,12 +187,18 @@ func (b *resourceFilterStatementBuilder[T]) addConditions(
 // addTimeFilter adds time-based filtering conditions
 func (b *resourceFilterStatementBuilder[T]) addTimeFilter(sb *sqlbuilder.SelectBuilder, start, end uint64) {
 	// Convert nanoseconds to seconds and adjust start bucket
-
 	startBucket := start/querybuilder.NsToSeconds - querybuilder.BucketAdjustment
-	endBucket := end / querybuilder.NsToSeconds
+	var endBucket uint64
+	if end != 0 {
+		endBucket = end / querybuilder.NsToSeconds
+	}
 
 	sb.Where(
 		sb.GE("seen_at_ts_bucket_start", startBucket),
-		sb.LE("seen_at_ts_bucket_start", endBucket),
 	)
+	if end != 0 {
+		sb.Where(
+			sb.LE("seen_at_ts_bucket_start", endBucket),
+		)
+	}
 }

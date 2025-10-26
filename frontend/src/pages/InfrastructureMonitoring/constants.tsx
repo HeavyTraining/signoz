@@ -5,7 +5,7 @@ import InfraMonitoringK8s from 'container/InfraMonitoringK8s';
 import { Inbox } from 'lucide-react';
 
 export const Hosts: TabRoutes = {
-	Component: InfraMonitoringHosts,
+	Component: (): JSX.Element => <InfraMonitoringHosts />,
 	name: (
 		<div className="tab-item">
 			<Inbox size={16} /> Hosts
@@ -16,7 +16,7 @@ export const Hosts: TabRoutes = {
 };
 
 export const Kubernetes: TabRoutes = {
-	Component: InfraMonitoringK8s,
+	Component: (): JSX.Element => <InfraMonitoringK8s />,
 	name: (
 		<div className="tab-item">
 			<Inbox size={16} /> Kubernetes

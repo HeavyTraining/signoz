@@ -1,5 +1,6 @@
 /* eslint-disable no-empty */
 import getLocalStorageKey from 'api/browser/localstorage/get';
+import { TelemetryFieldKey } from 'api/v5/v5';
 import { LOCALSTORAGE } from 'constants/localStorage';
 import { defaultLogsSelectedColumns } from 'container/OptionsMenu/constants';
 import { FontSize } from 'container/OptionsMenu/types';
@@ -9,10 +10,10 @@ import { FormattingOptions } from '../types';
 
 // --- LOGS preferences loader config ---
 const logsLoaders = {
-	local: async (): Promise<{
+	local: (): {
 		columns: BaseAutocompleteData[];
 		formatting: FormattingOptions;
-	}> => {
+	} => {
 		const local = getLocalStorageKey(LOCALSTORAGE.LOGS_LIST_OPTIONS);
 		if (local) {
 			try {
@@ -30,10 +31,10 @@ const logsLoaders = {
 		}
 		return { columns: [], formatting: undefined } as any;
 	},
-	url: async (): Promise<{
+	url: (): {
 		columns: BaseAutocompleteData[];
 		formatting: FormattingOptions;
-	}> => {
+	} => {
 		const urlParams = new URLSearchParams(window.location.search);
 		try {
 			const options = JSON.parse(urlParams.get('options') || '{}');
@@ -49,11 +50,11 @@ const logsLoaders = {
 		} catch {}
 		return { columns: [], formatting: undefined } as any;
 	},
-	default: async (): Promise<{
-		columns: BaseAutocompleteData[];
+	default: (): {
+		columns: TelemetryFieldKey[];
 		formatting: FormattingOptions;
-	}> => ({
-		columns: defaultLogsSelectedColumns as BaseAutocompleteData[],
+	} => ({
+		columns: defaultLogsSelectedColumns,
 		formatting: {
 			maxLines: 2,
 			format: 'table',

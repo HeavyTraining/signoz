@@ -1,14 +1,13 @@
 import getLocalStorageApi from 'api/browser/localstorage/get';
-import { Logout } from 'api/utils';
 import listOrgPreferences from 'api/v1/org/preferences/list';
+import get from 'api/v1/user/me/get';
 import listUserPreferences from 'api/v1/user/preferences/list';
-import getUserVersion from 'api/v1/version/getVersion';
+import getUserVersion from 'api/v1/version/get';
 import { LOCALSTORAGE } from 'constants/localStorage';
 import dayjs from 'dayjs';
 import useActiveLicenseV3 from 'hooks/useActiveLicenseV3/useActiveLicenseV3';
 import { useGetFeatureFlag } from 'hooks/useGetFeatureFlag';
 import { useGlobalEventListener } from 'hooks/useGlobalEventListener';
-import useGetUser from 'hooks/user/useGetUser';
 import {
 	createContext,
 	PropsWithChildren,
@@ -19,6 +18,7 @@ import {
 	useState,
 } from 'react';
 import { useQuery } from 'react-query';
+import { ChangelogSchema } from 'types/api/changelog/getChangelogByVersion';
 import { FeatureFlagProps as FeatureFlags } from 'types/api/features/getFeaturesFlags';
 import {
 	LicensePlatform,
@@ -39,7 +39,7 @@ import { getUserDefaults } from './utils';
 export const AppContext = createContext<IAppContext | undefined>(undefined);
 
 export function AppProvider({ children }: PropsWithChildren): JSX.Element {
-	// on load of the provider set the user defaults with access jwt , refresh jwt and user id from local storage
+	// on load of the provider set the user defaults with access token , refresh token from local storage
 	const [user, setUser] = useState<IUser>(() => getUserDefaults());
 	const [activeLicense, setActiveLicense] = useState<LicenseResModel | null>(
 		null,
@@ -58,13 +58,9 @@ export function AppProvider({ children }: PropsWithChildren): JSX.Element {
 		(): boolean => getLocalStorageApi(LOCALSTORAGE.IS_LOGGED_IN) === 'true',
 	);
 	const [org, setOrg] = useState<Organization[] | null>(null);
+	const [changelog, setChangelog] = useState<ChangelogSchema | null>(null);
 
-	// if the user.id is not present, for migration older cases then we need to logout only for current logged in users!
-	useEffect(() => {
-		if (!user.id && isLoggedIn) {
-			Logout();
-		}
-	}, [isLoggedIn, user]);
+	const [showChangelogModal, setShowChangelogModal] = useState<boolean>(false);
 
 	// fetcher for user
 	// user will only be fetched if the user id and token is present
@@ -73,7 +69,12 @@ export function AppProvider({ children }: PropsWithChildren): JSX.Element {
 		data: userData,
 		isFetching: isFetchingUser,
 		error: userFetchError,
-	} = useGetUser(user.id, isLoggedIn);
+	} = useQuery({
+		queryFn: get,
+		queryKey: ['/api/v1/user/me'],
+		enabled: isLoggedIn,
+	});
+
 	useEffect(() => {
 		if (!isFetchingUser && userData && userData.data) {
 			setUser((prev) => ({
@@ -253,6 +254,17 @@ export function AppProvider({ children }: PropsWithChildren): JSX.Element {
 		[org],
 	);
 
+	const updateChangelog = useCallback(
+		(payload: ChangelogSchema): void => {
+			setChangelog(payload);
+		},
+		[setChangelog],
+	);
+
+	const toggleChangelogModal = useCallback(() => {
+		setShowChangelogModal((prev) => !prev);
+	}, []);
+
 	// global event listener for AFTER_LOGIN event to start the user fetch post all actions are complete
 	useGlobalEventListener('AFTER_LOGIN', (event) => {
 		if (event.detail) {
@@ -296,12 +308,18 @@ export function AppProvider({ children }: PropsWithChildren): JSX.Element {
 			featureFlagsFetchError,
 			orgPreferencesFetchError,
 			activeLicense,
+			changelog,
+			showChangelogModal,
 			activeLicenseRefetch,
 			updateUser,
 			updateOrgPreferences,
 			updateUserPreferenceInContext,
 			updateOrg,
-			versionData: versionData?.payload || null,
+			updateChangelog,
+			toggleChangelogModal,
+			versionData: versionData?.data || null,
+			hasEditPermission:
+				user?.role === USER_ROLES.ADMIN || user?.role === USER_ROLES.EDITOR,
 		}),
 		[
 			trialInfo,
@@ -319,8 +337,12 @@ export function AppProvider({ children }: PropsWithChildren): JSX.Element {
 			orgPreferences,
 			activeLicenseRefetch,
 			orgPreferencesFetchError,
+			changelog,
+			showChangelogModal,
 			updateUserPreferenceInContext,
 			updateOrg,
+			updateChangelog,
+			toggleChangelogModal,
 			user,
 			userFetchError,
 			versionData,

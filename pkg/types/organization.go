@@ -49,6 +49,15 @@ func NewOrganizationKey(orgID valuer.UUID) uint32 {
 	return hasher.Sum32()
 }
 
+func NewTraitsFromOrganization(org *Organization) map[string]any {
+	return map[string]any{
+		"display_name": org.DisplayName,
+		"name":         org.Name,
+		"created_at":   org.CreatedAt,
+		"alias":        org.Alias,
+	}
+}
+
 type TTLSetting struct {
 	bun.BaseModel `bun:"table:ttl_setting"`
 	Identifiable
@@ -59,6 +68,7 @@ type TTLSetting struct {
 	ColdStorageTTL int    `bun:"cold_storage_ttl,notnull,default:0"`
 	Status         string `bun:"status,type:text,notnull"`
 	OrgID          string `json:"-" bun:"org_id,notnull"`
+	Condition      string `bun:"condition,type:text"`
 }
 
 type OrganizationStore interface {

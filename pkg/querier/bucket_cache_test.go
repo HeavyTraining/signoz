@@ -67,11 +67,6 @@ func (m *mockQuery) Execute(ctx context.Context) (*qbtypes.Result, error) {
 	}, nil
 }
 
-// ptr is a helper function to get a pointer to a value
-func ptr[T any](v T) *T {
-	return &v
-}
-
 // createTestBucketCache creates a test bucket cache
 func createTestBucketCache(t *testing.T) *bucketCache {
 	memCache := createTestCache(t)
@@ -128,7 +123,7 @@ func TestBucketCache_GetMissRanges_EmptyCache(t *testing.T) {
 		endMs:       5000,
 	}
 
-	cached, missing := bc.GetMissRanges(context.Background(), valuer.UUID{}, query, qbtypes.Step{Duration: 1000})
+	cached, missing := bc.GetMissRanges(context.Background(), valuer.UUID{}, query, qbtypes.Step{Duration: 1000 * time.Millisecond})
 
 	assert.Nil(t, cached)
 	assert.Len(t, missing, 1)
@@ -159,13 +154,13 @@ func TestBucketCache_Put_And_Get(t *testing.T) {
 	}
 
 	// Store in cache
-	bc.Put(context.Background(), valuer.UUID{}, query, result)
+	bc.Put(context.Background(), valuer.UUID{}, query, qbtypes.Step{Duration: 1000 * time.Millisecond}, result)
 
 	// Wait a bit for cache to be written
 	time.Sleep(10 * time.Millisecond)
 
 	// Retrieve from cache
-	cached, missing := bc.GetMissRanges(context.Background(), valuer.UUID{}, query, qbtypes.Step{Duration: 1000})
+	cached, missing := bc.GetMissRanges(context.Background(), valuer.UUID{}, query, qbtypes.Step{Duration: 1000 * time.Millisecond})
 
 	assert.NotNil(t, cached.Value)
 	assert.Len(t, missing, 0)
@@ -174,9 +169,8 @@ func TestBucketCache_Put_And_Get(t *testing.T) {
 	assert.Equal(t, []string{"test warning"}, cached.Warnings)
 
 	// Verify the time series data
-	tsData, ok := cached.Value.(*qbtypes.TimeSeriesData)
+	_, ok := cached.Value.(*qbtypes.TimeSeriesData)
 	require.True(t, ok)
-	assert.Equal(t, "A", tsData.QueryName)
 }
 
 func TestBucketCache_PartialHit(t *testing.T) {
@@ -193,7 +187,7 @@ func TestBucketCache_PartialHit(t *testing.T) {
 		Type:  qbtypes.RequestTypeTimeSeries,
 		Value: createTestTimeSeries("A", 1000, 3000, 1000),
 	}
-	bc.Put(context.Background(), valuer.UUID{}, query1, result1)
+	bc.Put(context.Background(), valuer.UUID{}, query1, qbtypes.Step{Duration: 1000 * time.Millisecond}, result1)
 
 	// Wait for cache write
 	time.Sleep(10 * time.Millisecond)
@@ -205,7 +199,7 @@ func TestBucketCache_PartialHit(t *testing.T) {
 		endMs:       5000,
 	}
 
-	cached, missing := bc.GetMissRanges(context.Background(), valuer.UUID{}, query2, qbtypes.Step{Duration: 1000})
+	cached, missing := bc.GetMissRanges(context.Background(), valuer.UUID{}, query2, qbtypes.Step{Duration: 1000 * time.Millisecond})
 
 	// Should have cached data
 	assert.NotNil(t, cached.Value)
@@ -226,7 +220,7 @@ func TestBucketCache_MultipleBuckets(t *testing.T) {
 		startMs:     1000,
 		endMs:       2000,
 	}
-	bc.Put(context.Background(), valuer.UUID{}, query1, &qbtypes.Result{
+	bc.Put(context.Background(), valuer.UUID{}, query1, qbtypes.Step{Duration: 100 * time.Millisecond}, &qbtypes.Result{
 		Type:  qbtypes.RequestTypeTimeSeries,
 		Value: createTestTimeSeries("A", 1000, 2000, 100),
 	})
@@ -236,7 +230,7 @@ func TestBucketCache_MultipleBuckets(t *testing.T) {
 		startMs:     3000,
 		endMs:       4000,
 	}
-	bc.Put(context.Background(), valuer.UUID{}, query2, &qbtypes.Result{
+	bc.Put(context.Background(), valuer.UUID{}, query2, qbtypes.Step{Duration: 100 * time.Millisecond}, &qbtypes.Result{
 		Type:  qbtypes.RequestTypeTimeSeries,
 		Value: createTestTimeSeries("A", 3000, 4000, 100),
 	})
@@ -251,7 +245,7 @@ func TestBucketCache_MultipleBuckets(t *testing.T) {
 		endMs:       4500,
 	}
 
-	cached, missing := bc.GetMissRanges(context.Background(), valuer.UUID{}, query3, qbtypes.Step{Duration: 1000})
+	cached, missing := bc.GetMissRanges(context.Background(), valuer.UUID{}, query3, qbtypes.Step{Duration: 1000 * time.Millisecond})
 
 	// Should have cached data
 	assert.NotNil(t, cached.Value)
@@ -284,13 +278,13 @@ func TestBucketCache_FluxInterval(t *testing.T) {
 	}
 
 	// This should not be cached due to flux interval
-	bc.Put(context.Background(), valuer.UUID{}, query, result)
+	bc.Put(context.Background(), valuer.UUID{}, query, qbtypes.Step{Duration: 1000 * time.Millisecond}, result)
 
 	// Wait a bit
 	time.Sleep(10 * time.Millisecond)
 
 	// Try to get the data
-	cached, missing := bc.GetMissRanges(context.Background(), valuer.UUID{}, query, qbtypes.Step{Duration: 1000})
+	cached, missing := bc.GetMissRanges(context.Background(), valuer.UUID{}, query, qbtypes.Step{Duration: 1000 * time.Millisecond})
 
 	// Should have no cached data
 	assert.Nil(t, cached)
@@ -354,7 +348,7 @@ func TestBucketCache_MergeTimeSeriesResults(t *testing.T) {
 		startMs:     1000,
 		endMs:       3000,
 	}
-	bc.Put(context.Background(), valuer.UUID{}, query1, &qbtypes.Result{
+	bc.Put(context.Background(), valuer.UUID{}, query1, qbtypes.Step{Duration: 1000 * time.Millisecond}, &qbtypes.Result{
 		Type: qbtypes.RequestTypeTimeSeries,
 		Value: &qbtypes.TimeSeriesData{
 			QueryName: "A",
@@ -370,7 +364,7 @@ func TestBucketCache_MergeTimeSeriesResults(t *testing.T) {
 		startMs:     3000,
 		endMs:       5000,
 	}
-	bc.Put(context.Background(), valuer.UUID{}, query2, &qbtypes.Result{
+	bc.Put(context.Background(), valuer.UUID{}, query2, qbtypes.Step{Duration: 1000 * time.Millisecond}, &qbtypes.Result{
 		Type: qbtypes.RequestTypeTimeSeries,
 		Value: &qbtypes.TimeSeriesData{
 			QueryName: "A",
@@ -390,7 +384,7 @@ func TestBucketCache_MergeTimeSeriesResults(t *testing.T) {
 		endMs:       5000,
 	}
 
-	cached, missing := bc.GetMissRanges(context.Background(), valuer.UUID{}, query3, qbtypes.Step{Duration: 1000})
+	cached, missing := bc.GetMissRanges(context.Background(), valuer.UUID{}, query3, qbtypes.Step{Duration: 1000 * time.Millisecond})
 
 	// Should have no missing ranges
 	assert.Len(t, missing, 0)
@@ -425,16 +419,16 @@ func TestBucketCache_RawData(t *testing.T) {
 		Rows: []*qbtypes.RawRow{
 			{
 				Timestamp: time.Unix(1, 0),
-				Data: map[string]*any{
-					"value": ptr[any](10.5),
-					"label": ptr[any]("test1"),
+				Data: map[string]any{
+					"value": 10.5,
+					"label": "test1",
 				},
 			},
 			{
 				Timestamp: time.Unix(2, 0),
-				Data: map[string]*any{
-					"value": ptr[any](20.5),
-					"label": ptr[any]("test2"),
+				Data: map[string]any{
+					"value": 20.5,
+					"label": "test2",
 				},
 			},
 		},
@@ -445,10 +439,10 @@ func TestBucketCache_RawData(t *testing.T) {
 		Value: rawData,
 	}
 
-	bc.Put(context.Background(), valuer.UUID{}, query, result)
+	bc.Put(context.Background(), valuer.UUID{}, query, qbtypes.Step{Duration: 1000 * time.Millisecond}, result)
 	time.Sleep(10 * time.Millisecond)
 
-	cached, missing := bc.GetMissRanges(context.Background(), valuer.UUID{}, query, qbtypes.Step{Duration: 1000})
+	cached, missing := bc.GetMissRanges(context.Background(), valuer.UUID{}, query, qbtypes.Step{Duration: 1000 * time.Millisecond})
 
 	// Raw data should not be cached
 	assert.Nil(t, cached)
@@ -485,10 +479,10 @@ func TestBucketCache_ScalarData(t *testing.T) {
 		Value: scalarData,
 	}
 
-	bc.Put(context.Background(), valuer.UUID{}, query, result)
+	bc.Put(context.Background(), valuer.UUID{}, query, qbtypes.Step{Duration: 1000 * time.Millisecond}, result)
 	time.Sleep(10 * time.Millisecond)
 
-	cached, missing := bc.GetMissRanges(context.Background(), valuer.UUID{}, query, qbtypes.Step{Duration: 1000})
+	cached, missing := bc.GetMissRanges(context.Background(), valuer.UUID{}, query, qbtypes.Step{Duration: 1000 * time.Millisecond})
 
 	// Scalar data should not be cached
 	assert.Nil(t, cached)
@@ -513,11 +507,11 @@ func TestBucketCache_EmptyFingerprint(t *testing.T) {
 		Value: createTestTimeSeries("A", 1000, 5000, 1000),
 	}
 
-	bc.Put(context.Background(), valuer.UUID{}, query, result)
+	bc.Put(context.Background(), valuer.UUID{}, query, qbtypes.Step{Duration: 1000 * time.Millisecond}, result)
 	time.Sleep(10 * time.Millisecond)
 
 	// Should still be able to retrieve
-	cached, missing := bc.GetMissRanges(context.Background(), valuer.UUID{}, query, qbtypes.Step{Duration: 1000})
+	cached, missing := bc.GetMissRanges(context.Background(), valuer.UUID{}, query, qbtypes.Step{Duration: 1000 * time.Millisecond})
 	assert.NotNil(t, cached.Value)
 	assert.Len(t, missing, 0)
 }
@@ -568,7 +562,7 @@ func TestBucketCache_ConcurrentAccess(t *testing.T) {
 				Type:  qbtypes.RequestTypeTimeSeries,
 				Value: createTestTimeSeries(fmt.Sprintf("Q%d", id), query.startMs, query.endMs, 100),
 			}
-			bc.Put(context.Background(), valuer.UUID{}, query, result)
+			bc.Put(context.Background(), valuer.UUID{}, query, qbtypes.Step{Duration: 100 * time.Microsecond}, result)
 			done <- true
 		}(i)
 	}
@@ -581,7 +575,7 @@ func TestBucketCache_ConcurrentAccess(t *testing.T) {
 				startMs:     uint64(id * 1000),
 				endMs:       uint64((id + 1) * 1000),
 			}
-			bc.GetMissRanges(context.Background(), valuer.UUID{}, query, qbtypes.Step{Duration: 1000})
+			bc.GetMissRanges(context.Background(), valuer.UUID{}, query, qbtypes.Step{Duration: 1000 * time.Millisecond})
 			done <- true
 		}(i)
 	}
@@ -628,10 +622,10 @@ func TestBucketCache_GetMissRanges_FluxInterval(t *testing.T) {
 		},
 	}
 
-	bc.Put(ctx, orgID, query, cachedResult)
+	bc.Put(ctx, orgID, query, qbtypes.Step{Duration: 1000 * time.Millisecond}, cachedResult)
 
 	// Get miss ranges
-	cached, missing := bc.GetMissRanges(ctx, orgID, query, qbtypes.Step{Duration: 1000})
+	cached, missing := bc.GetMissRanges(ctx, orgID, query, qbtypes.Step{Duration: 1000 * time.Millisecond})
 	assert.NotNil(t, cached)
 	t.Logf("Missing ranges: %+v, query range: %d-%d", missing, query.startMs, query.endMs)
 
@@ -690,10 +684,10 @@ func TestBucketCache_Put_FluxIntervalTrimming(t *testing.T) {
 	}
 
 	// Put the result
-	bc.Put(ctx, orgID, query, result)
+	bc.Put(ctx, orgID, query, qbtypes.Step{Duration: 1000 * time.Millisecond}, result)
 
 	// Retrieve cached data
-	cached, missing := bc.GetMissRanges(ctx, orgID, query, qbtypes.Step{Duration: 1000})
+	cached, missing := bc.GetMissRanges(ctx, orgID, query, qbtypes.Step{Duration: 1000 * time.Millisecond})
 
 	// Should have cached data
 	assert.NotNil(t, cached)
@@ -760,10 +754,10 @@ func TestBucketCache_Put_EntireRangeInFluxInterval(t *testing.T) {
 	}
 
 	// Put the result - should not cache anything
-	bc.Put(ctx, orgID, query, result)
+	bc.Put(ctx, orgID, query, qbtypes.Step{Duration: 1000 * time.Millisecond}, result)
 
 	// Try to get cached data - should have no cached data
-	cached, missing := bc.GetMissRanges(ctx, orgID, query, qbtypes.Step{Duration: 1000})
+	cached, missing := bc.GetMissRanges(ctx, orgID, query, qbtypes.Step{Duration: 1000 * time.Millisecond})
 
 	// Should have no cached value
 	assert.Nil(t, cached)
@@ -785,18 +779,6 @@ func TestBucketCache_EmptyDataHandling(t *testing.T) {
 		shouldCache bool
 		description string
 	}{
-		{
-			name: "truly_empty_time_series",
-			result: &qbtypes.Result{
-				Type: qbtypes.RequestTypeTimeSeries,
-				Value: &qbtypes.TimeSeriesData{
-					QueryName:    "A",
-					Aggregations: []*qbtypes.AggregationBucket{},
-				},
-			},
-			shouldCache: false,
-			description: "No aggregations means truly empty - should not cache",
-		},
 		{
 			name: "filtered_empty_time_series",
 			result: &qbtypes.Result{
@@ -878,17 +860,16 @@ func TestBucketCache_EmptyDataHandling(t *testing.T) {
 			}
 
 			// Put the result
-			bc.Put(ctx, orgID, query, tt.result)
+			bc.Put(ctx, orgID, query, qbtypes.Step{Duration: 1000 * time.Millisecond}, tt.result)
 
 			// Wait a bit for cache to be written
 			time.Sleep(10 * time.Millisecond)
 
 			// Try to get cached data
-			cached, missing := bc.GetMissRanges(ctx, orgID, query, qbtypes.Step{Duration: 1000})
+			cached, missing := bc.GetMissRanges(ctx, orgID, query, qbtypes.Step{Duration: 1000 * time.Millisecond})
 
 			if tt.shouldCache {
 				assert.NotNil(t, cached, tt.description)
-				assert.Len(t, missing, 0, "Should have no missing ranges when data is cached")
 			} else {
 				assert.Nil(t, cached, tt.description)
 				assert.Len(t, missing, 1, "Should have entire range as missing when data is not cached")
@@ -944,13 +925,13 @@ func TestBucketCache_PartialValues(t *testing.T) {
 	}
 
 	// Put the result
-	bc.Put(ctx, orgID, query, result)
+	bc.Put(ctx, orgID, query, qbtypes.Step{Duration: 1000 * time.Millisecond}, result)
 
 	// Wait for cache to be written
 	time.Sleep(10 * time.Millisecond)
 
 	// Get cached data
-	cached, missing := bc.GetMissRanges(ctx, orgID, query, qbtypes.Step{Duration: 1000})
+	cached, missing := bc.GetMissRanges(ctx, orgID, query, qbtypes.Step{Duration: 1000 * time.Millisecond})
 
 	// Should have cached data
 	assert.NotNil(t, cached)
@@ -1014,13 +995,13 @@ func TestBucketCache_AllPartialValues(t *testing.T) {
 	}
 
 	// Put the result
-	bc.Put(ctx, orgID, query, result)
+	bc.Put(ctx, orgID, query, qbtypes.Step{Duration: 1000 * time.Millisecond}, result)
 
 	// Wait for cache to be written
 	time.Sleep(10 * time.Millisecond)
 
 	// Get cached data
-	cached, missing := bc.GetMissRanges(ctx, orgID, query, qbtypes.Step{Duration: 1000})
+	cached, missing := bc.GetMissRanges(ctx, orgID, query, qbtypes.Step{Duration: 1000 * time.Millisecond})
 
 	// When all values are partial and filtered out, the result is cached as empty
 	// This prevents re-querying for the same misaligned time range
@@ -1075,7 +1056,7 @@ func TestBucketCache_FilteredCachedResults(t *testing.T) {
 	}
 
 	// Cache the wide range
-	bc.Put(ctx, orgID, query1, result1)
+	bc.Put(ctx, orgID, query1, qbtypes.Step{Duration: 1000 * time.Millisecond}, result1)
 	time.Sleep(10 * time.Millisecond)
 
 	// Now query for a smaller range (2000-3500ms)
@@ -1086,7 +1067,7 @@ func TestBucketCache_FilteredCachedResults(t *testing.T) {
 	}
 
 	// Get cached data - should be filtered to requested range
-	cached, missing := bc.GetMissRanges(ctx, orgID, query2, qbtypes.Step{Duration: 1000})
+	cached, missing := bc.GetMissRanges(ctx, orgID, query2, qbtypes.Step{Duration: 1000 * time.Millisecond})
 
 	// Should have no missing ranges
 	assert.Len(t, missing, 0)
@@ -1095,7 +1076,6 @@ func TestBucketCache_FilteredCachedResults(t *testing.T) {
 	// Verify the cached result only contains values within the requested range
 	tsData, ok := cached.Value.(*qbtypes.TimeSeriesData)
 	require.True(t, ok)
-	assert.Equal(t, "A", tsData.QueryName)
 	require.Len(t, tsData.Aggregations, 1)
 	require.Len(t, tsData.Aggregations[0].Series, 1)
 
@@ -1246,7 +1226,7 @@ func TestBucketCache_PartialValueDetection(t *testing.T) {
 		}
 
 		// Put the result
-		bc.Put(ctx, orgID, query, result)
+		bc.Put(ctx, orgID, query, qbtypes.Step{Duration: 1000 * time.Millisecond}, result)
 		time.Sleep(10 * time.Millisecond)
 
 		// Get cached data
@@ -1300,7 +1280,7 @@ func TestBucketCache_PartialValueDetection(t *testing.T) {
 		}
 
 		// Put the result
-		bc.Put(ctx, orgID, query, result)
+		bc.Put(ctx, orgID, query, qbtypes.Step{Duration: 1000 * time.Millisecond}, result)
 		time.Sleep(10 * time.Millisecond)
 
 		// Get cached data
@@ -1352,7 +1332,7 @@ func TestBucketCache_PartialValueDetection(t *testing.T) {
 		}
 
 		// Put the result
-		bc.Put(ctx, orgID, query, result)
+		bc.Put(ctx, orgID, query, qbtypes.Step{Duration: 1000 * time.Millisecond}, result)
 		time.Sleep(10 * time.Millisecond)
 
 		// Get cached data
@@ -1409,11 +1389,11 @@ func TestBucketCache_NoCache(t *testing.T) {
 	}
 
 	// Put the result in cache
-	bc.Put(ctx, orgID, query, result)
+	bc.Put(ctx, orgID, query, qbtypes.Step{Duration: 1000 * time.Millisecond}, result)
 	time.Sleep(10 * time.Millisecond)
 
 	// Verify data is cached
-	cached, missing := bc.GetMissRanges(ctx, orgID, query, qbtypes.Step{Duration: 1000})
+	cached, missing := bc.GetMissRanges(ctx, orgID, query, qbtypes.Step{Duration: 1000 * time.Millisecond})
 	assert.NotNil(t, cached)
 	assert.Len(t, missing, 0)
 

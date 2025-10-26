@@ -1,14 +1,15 @@
 /* eslint-disable no-empty */
 import getLocalStorageKey from 'api/browser/localstorage/get';
+import { TelemetryFieldKey } from 'api/v5/v5';
 import { LOCALSTORAGE } from 'constants/localStorage';
 import { defaultTraceSelectedColumns } from 'container/OptionsMenu/constants';
 import { BaseAutocompleteData } from 'types/api/queryBuilder/queryAutocompleteResponse';
 
 // --- TRACES preferences loader config ---
 const tracesLoaders = {
-	local: async (): Promise<{
+	local: (): {
 		columns: BaseAutocompleteData[];
-	}> => {
+	} => {
 		const local = getLocalStorageKey(LOCALSTORAGE.TRACES_LIST_OPTIONS);
 		if (local) {
 			try {
@@ -20,9 +21,9 @@ const tracesLoaders = {
 		}
 		return { columns: [] };
 	},
-	url: async (): Promise<{
+	url: (): {
 		columns: BaseAutocompleteData[];
-	}> => {
+	} => {
 		const urlParams = new URLSearchParams(window.location.search);
 		try {
 			const options = JSON.parse(urlParams.get('options') || '{}');
@@ -32,10 +33,10 @@ const tracesLoaders = {
 		} catch {}
 		return { columns: [] };
 	},
-	default: async (): Promise<{
-		columns: BaseAutocompleteData[];
-	}> => ({
-		columns: defaultTraceSelectedColumns as BaseAutocompleteData[],
+	default: (): {
+		columns: TelemetryFieldKey[];
+	} => ({
+		columns: defaultTraceSelectedColumns,
 	}),
 	priority: ['local', 'url', 'default'] as const,
 };

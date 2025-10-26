@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/SigNoz/signoz/pkg/errors"
 	"github.com/SigNoz/signoz/pkg/telemetrystore"
 	qbtypes "github.com/SigNoz/signoz/pkg/types/querybuildertypes/querybuildertypesv5"
 	"github.com/SigNoz/signoz/pkg/types/telemetrytypes"
@@ -18,6 +19,7 @@ type builderQuery[T any] struct {
 	telemetryStore telemetrystore.TelemetryStore
 	stmtBuilder    qbtypes.StatementBuilder[T]
 	spec           qbtypes.QueryBuilderQuery[T]
+	variables      map[string]qbtypes.VariableItem
 
 	fromMS uint64
 	toMS   uint64
@@ -32,11 +34,13 @@ func newBuilderQuery[T any](
 	spec qbtypes.QueryBuilderQuery[T],
 	tr qbtypes.TimeRange,
 	kind qbtypes.RequestType,
+	variables map[string]qbtypes.VariableItem,
 ) *builderQuery[T] {
 	return &builderQuery[T]{
 		telemetryStore: telemetryStore,
 		stmtBuilder:    stmtBuilder,
 		spec:           spec,
+		variables:      variables,
 		fromMS:         tr.From,
 		toMS:           tr.To,
 		kind:           kind,
@@ -57,6 +61,9 @@ func (q *builderQuery[T]) Fingerprint() string {
 
 	// Add signal type
 	parts = append(parts, fmt.Sprintf("signal=%s", q.spec.Signal.StringValue()))
+
+	// Add source type
+	parts = append(parts, fmt.Sprintf("source=%s", q.spec.Source.StringValue()))
 
 	// Add step interval if present
 	parts = append(parts, fmt.Sprintf("step=%s", q.spec.StepInterval.String()))
@@ -85,6 +92,12 @@ func (q *builderQuery[T]) Fingerprint() string {
 	// Add filter if present
 	if q.spec.Filter != nil && q.spec.Filter.Expression != "" {
 		parts = append(parts, fmt.Sprintf("filter=%s", q.spec.Filter.Expression))
+
+		for name, item := range q.variables {
+			if strings.Contains(q.spec.Filter.Expression, "$"+name) {
+				parts = append(parts, fmt.Sprintf("%s=%s", name, fmt.Sprint(item.Value)))
+			}
+		}
 	}
 
 	// Add group by keys
@@ -116,6 +129,10 @@ func (q *builderQuery[T]) Fingerprint() string {
 	// Add having clause
 	if q.spec.Having != nil && q.spec.Having.Expression != "" {
 		parts = append(parts, fmt.Sprintf("having=%s", q.spec.Having.Expression))
+	}
+
+	if q.spec.ShiftBy != 0 {
+		parts = append(parts, fmt.Sprintf("shiftby=%d", q.spec.ShiftBy))
 	}
 
 	return strings.Join(parts, "&")
@@ -170,7 +187,7 @@ func (q *builderQuery[T]) Execute(ctx context.Context) (*qbtypes.Result, error) 
 		return q.executeWindowList(ctx)
 	}
 
-	stmt, err := q.stmtBuilder.Build(ctx, q.fromMS, q.toMS, q.kind, q.spec)
+	stmt, err := q.stmtBuilder.Build(ctx, q.fromMS, q.toMS, q.kind, q.spec, q.variables)
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +197,9 @@ func (q *builderQuery[T]) Execute(ctx context.Context) (*qbtypes.Result, error) 
 	if err != nil {
 		return nil, err
 	}
+
 	result.Warnings = stmt.Warnings
+	result.WarningsDocURL = stmt.WarningsDocURL
 	return result, nil
 }
 
@@ -198,13 +217,33 @@ func (q *builderQuery[T]) executeWithContext(ctx context.Context, query string, 
 
 	rows, err := q.telemetryStore.ClickhouseDB().Query(ctx, query, args...)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, errors.Newf(errors.TypeTimeout, errors.CodeTimeout, "Query timed out").
+				WithAdditional("Try refining your search by adding relevant resource attributes filtering")
+		}
+
+		if !errors.Is(err, context.Canceled) {
+			return nil, errors.Newf(
+				errors.TypeInternal,
+				errors.CodeInternal,
+				"Something went wrong on our end. It's not you, it's us. Our team is notified about it. Reach out to support if issue persists.",
+			)
+		}
+
 		return nil, err
 	}
 	defer rows.Close()
 
 	// Pass query window and step for partial value detection
 	queryWindow := &qbtypes.TimeRange{From: q.fromMS, To: q.toMS}
-	payload, err := consume(rows, q.kind, queryWindow, q.spec.StepInterval, q.spec.Name)
+
+	kind := q.kind
+	// all metric queries are time series then reduced if required
+	if q.spec.Signal == telemetrytypes.SignalMetrics {
+		kind = qbtypes.RequestTypeTimeSeries
+	}
+
+	payload, err := consume(rows, kind, queryWindow, q.spec.StepInterval, q.spec.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -224,16 +263,18 @@ func (q *builderQuery[T]) executeWindowList(ctx context.Context) (*qbtypes.Resul
 	isAsc := len(q.spec.Order) > 0 &&
 		strings.ToLower(string(q.spec.Order[0].Direction.StringValue())) == "asc"
 
+	fromMS, toMS := q.fromMS, q.toMS
+
 	// Adjust [fromMS,toMS] window if a cursor was supplied
 	if cur := strings.TrimSpace(q.spec.Cursor); cur != "" {
 		if ts, err := decodeCursor(cur); err == nil {
 			if isAsc {
-				if uint64(ts) >= q.fromMS {
-					q.fromMS = uint64(ts + 1)
+				if uint64(ts) >= fromMS {
+					fromMS = uint64(ts + 1)
 				}
 			} else { // DESC
-				if uint64(ts) <= q.toMS {
-					q.toMS = uint64(ts - 1)
+				if uint64(ts) <= toMS {
+					toMS = uint64(ts - 1)
 				}
 			}
 		}
@@ -252,15 +293,28 @@ func (q *builderQuery[T]) executeWindowList(ctx context.Context) (*qbtypes.Resul
 	totalBytes := uint64(0)
 	start := time.Now()
 
-	for _, r := range makeBuckets(q.fromMS, q.toMS) {
+	// Get buckets and reverse them for ascending order
+	buckets := makeBuckets(fromMS, toMS)
+	if isAsc {
+		// Reverse the buckets for ascending order
+		for i, j := 0, len(buckets)-1; i < j; i, j = i+1, j-1 {
+			buckets[i], buckets[j] = buckets[j], buckets[i]
+		}
+	}
+
+	var warnings []string
+	var warningsDocURL string
+
+	for _, r := range buckets {
 		q.spec.Offset = 0
 		q.spec.Limit = need
 
-		stmt, err := q.stmtBuilder.Build(ctx, r.fromNS/1e6, r.toNS/1e6, q.kind, q.spec)
+		stmt, err := q.stmtBuilder.Build(ctx, r.fromNS/1e6, r.toNS/1e6, q.kind, q.spec, q.variables)
 		if err != nil {
 			return nil, err
 		}
-
+		warnings = stmt.Warnings
+		warningsDocURL = stmt.WarningsDocURL
 		// Execute with proper context for partial value detection
 		res, err := q.executeWithContext(ctx, stmt.Query, stmt.Args)
 		if err != nil {
@@ -300,6 +354,8 @@ func (q *builderQuery[T]) executeWindowList(ctx context.Context) (*qbtypes.Resul
 			Rows:       rows,
 			NextCursor: nextCursor,
 		},
+		Warnings:       warnings,
+		WarningsDocURL: warningsDocURL,
 		Stats: qbtypes.ExecStats{
 			RowsScanned:  totalRows,
 			BytesScanned: totalBytes,

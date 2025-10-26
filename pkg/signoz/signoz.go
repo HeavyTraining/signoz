@@ -4,6 +4,11 @@ import (
 	"context"
 
 	"github.com/SigNoz/signoz/pkg/alertmanager"
+	"github.com/SigNoz/signoz/pkg/alertmanager/nfmanager"
+	"github.com/SigNoz/signoz/pkg/alertmanager/nfmanager/nfroutingstore/sqlroutingstore"
+	"github.com/SigNoz/signoz/pkg/analytics"
+	"github.com/SigNoz/signoz/pkg/authn"
+	"github.com/SigNoz/signoz/pkg/authn/authnstore/sqlauthnstore"
 	"github.com/SigNoz/signoz/pkg/cache"
 	"github.com/SigNoz/signoz/pkg/emailing"
 	"github.com/SigNoz/signoz/pkg/factory"
@@ -11,15 +16,17 @@ import (
 	"github.com/SigNoz/signoz/pkg/licensing"
 	"github.com/SigNoz/signoz/pkg/modules/organization"
 	"github.com/SigNoz/signoz/pkg/modules/organization/implorganization"
+	"github.com/SigNoz/signoz/pkg/modules/user/impluser"
 	"github.com/SigNoz/signoz/pkg/prometheus"
 	"github.com/SigNoz/signoz/pkg/querier"
-	"github.com/SigNoz/signoz/pkg/ruler"
 	"github.com/SigNoz/signoz/pkg/sharder"
 	"github.com/SigNoz/signoz/pkg/sqlmigration"
 	"github.com/SigNoz/signoz/pkg/sqlmigrator"
+	"github.com/SigNoz/signoz/pkg/sqlschema"
 	"github.com/SigNoz/signoz/pkg/sqlstore"
 	"github.com/SigNoz/signoz/pkg/statsreporter"
 	"github.com/SigNoz/signoz/pkg/telemetrystore"
+	pkgtokenizer "github.com/SigNoz/signoz/pkg/tokenizer"
 	"github.com/SigNoz/signoz/pkg/types/authtypes"
 	"github.com/SigNoz/signoz/pkg/version"
 	"github.com/SigNoz/signoz/pkg/zeus"
@@ -30,6 +37,7 @@ import (
 type SigNoz struct {
 	*factory.Registry
 	Instrumentation instrumentation.Instrumentation
+	Analytics       analytics.Analytics
 	Cache           cache.Cache
 	Web             web.Web
 	SQLStore        sqlstore.SQLStore
@@ -37,12 +45,12 @@ type SigNoz struct {
 	Prometheus      prometheus.Prometheus
 	Alertmanager    alertmanager.Alertmanager
 	Querier         querier.Querier
-	Rules           ruler.Ruler
 	Zeus            zeus.Zeus
 	Licensing       licensing.Licensing
 	Emailing        emailing.Emailing
 	Sharder         sharder.Sharder
 	StatsReporter   statsreporter.StatsReporter
+	Tokenizer       pkgtokenizer.Tokenizer
 	Modules         Modules
 	Handlers        Handlers
 }
@@ -50,16 +58,17 @@ type SigNoz struct {
 func New(
 	ctx context.Context,
 	config Config,
-	jwt *authtypes.JWT,
 	zeusConfig zeus.Config,
 	zeusProviderFactory factory.ProviderFactory[zeus.Zeus, zeus.Config],
 	licenseConfig licensing.Config,
-	licenseProviderFactory func(sqlstore.SQLStore, zeus.Zeus, organization.Getter) factory.ProviderFactory[licensing.Licensing, licensing.Config],
+	licenseProviderFactory func(sqlstore.SQLStore, zeus.Zeus, organization.Getter, analytics.Analytics) factory.ProviderFactory[licensing.Licensing, licensing.Config],
 	emailingProviderFactories factory.NamedMap[factory.ProviderFactory[emailing.Emailing, emailing.Config]],
 	cacheProviderFactories factory.NamedMap[factory.ProviderFactory[cache.Cache, cache.Config]],
 	webProviderFactories factory.NamedMap[factory.ProviderFactory[web.Web, web.Config]],
+	sqlSchemaProviderFactories func(sqlstore.SQLStore) factory.NamedMap[factory.ProviderFactory[sqlschema.SQLSchema, sqlschema.Config]],
 	sqlstoreProviderFactories factory.NamedMap[factory.ProviderFactory[sqlstore.SQLStore, sqlstore.Config]],
 	telemetrystoreProviderFactories factory.NamedMap[factory.ProviderFactory[telemetrystore.TelemetryStore, telemetrystore.Config]],
+	authNsCallback func(ctx context.Context, providerSettings factory.ProviderSettings, store authtypes.AuthNStore, licensing licensing.Licensing) (map[authtypes.AuthNProvider]authn.AuthN, error),
 ) (*SigNoz, error) {
 	// Initialize instrumentation
 	instrumentation, err := instrumentation.New(ctx, config.Instrumentation, version.Info, "signoz")
@@ -180,12 +189,23 @@ func New(
 		return nil, err
 	}
 
+	sqlschema, err := factory.NewProviderFromNamedMap(
+		ctx,
+		providerSettings,
+		config.SQLSchema,
+		sqlSchemaProviderFactories(sqlstore),
+		config.SQLStore.Provider,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	// Run migrations on the sqlstore
 	sqlmigrations, err := sqlmigration.New(
 		ctx,
 		providerSettings,
 		config.SQLMigration,
-		NewSQLMigrationProviderFactories(sqlstore),
+		NewSQLMigrationProviderFactories(sqlstore, sqlschema, telemetrystore, providerSettings),
 	)
 	if err != nil {
 		return nil, err
@@ -211,12 +231,39 @@ func New(
 	// Initialize organization getter
 	orgGetter := implorganization.NewGetter(implorganization.NewStore(sqlstore), sharder)
 
+	// Initialize tokenizer from the available tokenizer provider factories
+	tokenizer, err := factory.NewProviderFromNamedMap(
+		ctx,
+		providerSettings,
+		config.Tokenizer,
+		NewTokenizerProviderFactories(cache, sqlstore, orgGetter),
+		config.Tokenizer.Provider,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Initialize user getter
+	userGetter := impluser.NewGetter(impluser.NewStore(sqlstore, providerSettings))
+
+	// Initialize notification manager from the available notification manager provider factories
+	nfManager, err := factory.NewProviderFromNamedMap(
+		ctx,
+		providerSettings,
+		nfmanager.Config{},
+		NewNotificationManagerProviderFactories(sqlroutingstore.NewStore(sqlstore)),
+		"rulebased",
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	// Initialize alertmanager from the available alertmanager provider factories
 	alertmanager, err := factory.NewProviderFromNamedMap(
 		ctx,
 		providerSettings,
 		config.Alertmanager,
-		NewAlertmanagerProviderFactories(sqlstore, orgGetter),
+		NewAlertmanagerProviderFactories(sqlstore, orgGetter, nfManager),
 		config.Alertmanager.Provider,
 	)
 	if err != nil {
@@ -235,7 +282,7 @@ func New(
 		return nil, err
 	}
 
-	licensingProviderFactory := licenseProviderFactory(sqlstore, zeus, orgGetter)
+	licensingProviderFactory := licenseProviderFactory(sqlstore, zeus, orgGetter, analytics)
 	licensing, err := licensingProviderFactory.New(
 		ctx,
 		providerSettings,
@@ -245,11 +292,18 @@ func New(
 		return nil, err
 	}
 
+	// Initialize authns
+	store := sqlauthnstore.NewStore(sqlstore)
+	authNs, err := authNsCallback(ctx, providerSettings, store, licensing)
+	if err != nil {
+		return nil, err
+	}
+
 	// Initialize all modules
-	modules := NewModules(sqlstore, jwt, emailing, providerSettings, orgGetter, alertmanager, analytics)
+	modules := NewModules(sqlstore, tokenizer, emailing, providerSettings, orgGetter, alertmanager, analytics, querier, authNs)
 
 	// Initialize all handlers for the modules
-	handlers := NewHandlers(modules)
+	handlers := NewHandlers(modules, providerSettings)
 
 	// Create a list of all stats collectors
 	statsCollectors := []statsreporter.StatsCollector{
@@ -259,6 +313,8 @@ func New(
 		modules.SavedView,
 		modules.User,
 		licensing,
+		tokenizer,
+		config,
 	}
 
 	// Initialize stats reporter from the available stats reporter provider factories
@@ -266,7 +322,7 @@ func New(
 		ctx,
 		providerSettings,
 		config.StatsReporter,
-		NewStatsReporterProviderFactories(telemetrystore, statsCollectors, orgGetter, version.Info, config.Analytics),
+		NewStatsReporterProviderFactories(telemetrystore, statsCollectors, orgGetter, userGetter, tokenizer, version.Info, config.Analytics),
 		config.StatsReporter.Provider(),
 	)
 	if err != nil {
@@ -280,6 +336,7 @@ func New(
 		factory.NewNamedService(factory.MustNewName("alertmanager"), alertmanager),
 		factory.NewNamedService(factory.MustNewName("licensing"), licensing),
 		factory.NewNamedService(factory.MustNewName("statsreporter"), statsReporter),
+		factory.NewNamedService(factory.MustNewName("tokenizer"), tokenizer),
 	)
 	if err != nil {
 		return nil, err
@@ -287,6 +344,7 @@ func New(
 
 	return &SigNoz{
 		Registry:        registry,
+		Analytics:       analytics,
 		Instrumentation: instrumentation,
 		Cache:           cache,
 		Web:             web,
@@ -299,6 +357,7 @@ func New(
 		Licensing:       licensing,
 		Emailing:        emailing,
 		Sharder:         sharder,
+		Tokenizer:       tokenizer,
 		Modules:         modules,
 		Handlers:        handlers,
 	}, nil

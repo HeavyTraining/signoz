@@ -9,6 +9,7 @@ import (
 	"github.com/SigNoz/signoz/pkg/sqlstore"
 	"github.com/SigNoz/signoz/pkg/types"
 	"github.com/SigNoz/signoz/pkg/types/authtypes"
+	"github.com/SigNoz/signoz/pkg/types/ctxtypes"
 	"github.com/SigNoz/signoz/pkg/valuer"
 )
 
@@ -79,8 +80,8 @@ func (a *APIKey) Wrap(next http.Handler) http.Handler {
 		jwt := authtypes.Claims{
 			UserID: user.ID.String(),
 			Role:   apiKey.Role,
-			Email:  user.Email,
-			OrgID:  user.OrgID,
+			Email:  user.Email.String(),
+			OrgID:  user.OrgID.String(),
 		}
 
 		ctx = authtypes.NewContextWithClaims(ctx, jwt)
@@ -97,7 +98,14 @@ func (a *APIKey) Wrap(next http.Handler) http.Handler {
 			return
 		}
 
-		r = r.WithContext(ctx)
+		ctx = ctxtypes.SetAuthType(ctx, ctxtypes.AuthTypeAPIKey)
+
+		comment := ctxtypes.CommentFromContext(ctx)
+		comment.Set("auth_type", ctxtypes.AuthTypeAPIKey.StringValue())
+		comment.Set("user_id", claims.UserID)
+		comment.Set("org_id", claims.OrgID)
+
+		r = r.WithContext(ctxtypes.NewContextWithComment(ctx, comment))
 
 		next.ServeHTTP(w, r)
 

@@ -1,10 +1,15 @@
 .alerts-container {
-	.ant-tabs-nav-wrap {
-		padding-left: 16px;
+	.ant-tabs-nav {
+		padding: 0 8px;
 	}
 
-	.ant-tabs-content-holder {
-		padding-left: 16px;
-		padding-right: 16px;
+	.configuration-tabs {
+		margin-top: -16px;
+
+		.ant-tabs-nav {
+			.ant-tabs-nav-wrap {
+				padding: 0 8px;
+			}
+		}
 	}
 }

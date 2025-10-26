@@ -6,11 +6,13 @@ import { Button, Form, Input, Modal, Typography } from 'antd';
 import { useForm } from 'antd/es/form/Form';
 import logEvent from 'api/common/logEvent';
 import cx from 'classnames';
+import { ENTITY_VERSION_V5 } from 'constants/app';
 import { QueryParams } from 'constants/query';
 import { PANEL_GROUP_TYPES, PANEL_TYPES } from 'constants/queryBuilder';
 import { themeColors } from 'constants/theme';
 import { DEFAULT_ROW_NAME } from 'container/NewDashboard/DashboardDescription/utils';
 import { useUpdateDashboard } from 'hooks/dashboard/useUpdateDashboard';
+import { createDynamicVariableToWidgetsMap } from 'hooks/dashboard/utils';
 import useComponentPermission from 'hooks/useComponentPermission';
 import { useIsDarkMode } from 'hooks/useDarkMode';
 import { useSafeNavigate } from 'hooks/useSafeNavigate';
@@ -34,7 +36,7 @@ import { ItemCallback, Layout } from 'react-grid-layout';
 import { useDispatch } from 'react-redux';
 import { useLocation } from 'react-router-dom';
 import { UpdateTimeInterval } from 'store/actions';
-import { Widgets } from 'types/api/dashboard/getAll';
+import { IDashboardVariable, Widgets } from 'types/api/dashboard/getAll';
 import { Props } from 'types/api/dashboard/update';
 import { ROLES, USER_ROLES } from 'types/roles';
 import { ComponentTypes } from 'utils/permission';
@@ -52,11 +54,12 @@ import { WidgetRowHeader } from './WidgetRow';
 
 interface GraphLayoutProps {
 	handle: FullScreenHandle;
+	enableDrillDown?: boolean;
 }
 
 // eslint-disable-next-line sonarjs/cognitive-complexity
 function GraphLayout(props: GraphLayoutProps): JSX.Element {
-	const { handle } = props;
+	const { handle, enableDrillDown = false } = props;
 	const { safeNavigate } = useSafeNavigate();
 	const {
 		selectedDashboard,
@@ -95,6 +98,22 @@ function GraphLayout(props: GraphLayoutProps): JSX.Element {
 	const [currentPanelMap, setCurrentPanelMap] = useState<
 		Record<string, { widgets: Layout[]; collapsed: boolean }>
 	>({});
+
+	const widgetsHavingDynamicVariables = useMemo(() => {
+		const dynamicVariables = Object.values(
+			selectedDashboard?.data?.variables || {},
+		)?.filter((variable: IDashboardVariable) => variable.type === 'DYNAMIC');
+
+		const widgets =
+			selectedDashboard?.data?.widgets?.filter(
+				(widget) => widget.panelTypes !== PANEL_GROUP_TYPES.ROW,
+			) || [];
+
+		return createDynamicVariableToWidgetsMap(
+			dynamicVariables,
+			widgets as Widgets[],
+		);
+	}, [selectedDashboard]);
 
 	useEffect(() => {
 		setCurrentPanelMap(panelMap);
@@ -579,9 +598,12 @@ function GraphLayout(props: GraphLayoutProps): JSX.Element {
 									widget={(currentWidget as Widgets) || ({ id, query: {} } as Widgets)}
 									headerMenuList={widgetActions}
 									variables={variables}
-									version={selectedDashboard?.data?.version}
+									// version={selectedDashboard?.data?.version}
+									version={ENTITY_VERSION_V5}
 									onDragSelect={onDragSelect}
 									dataAvailable={checkIfDataExists}
+									enableDrillDown={enableDrillDown}
+									widgetsHavingDynamicVariables={widgetsHavingDynamicVariables}
 								/>
 							</Card>
 						</CardContainer>
@@ -668,3 +690,7 @@ function GraphLayout(props: GraphLayoutProps): JSX.Element {
 }
 
 export default GraphLayout;
+
+GraphLayout.defaultProps = {
+	enableDrillDown: false,
+};

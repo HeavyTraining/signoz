@@ -1,5 +1,11 @@
 import { Tabs, TabsProps } from 'antd';
-import { useLocation, useParams } from 'react-router-dom';
+import HeaderRightSection from 'components/HeaderRightSection/HeaderRightSection';
+import {
+	generatePath,
+	matchPath,
+	useLocation,
+	useParams,
+} from 'react-router-dom';
 
 import { RouteTabProps } from './types';
 
@@ -12,25 +18,19 @@ function RouteTab({
 	activeKey,
 	onChangeHandler,
 	history,
+	showRightSection,
 	...rest
 }: RouteTabProps & TabsProps): JSX.Element {
 	const params = useParams<Params>();
 	const location = useLocation();
 
-	// Replace dynamic parameters in routes
-	const routesWithParams = routes.map((route) => ({
-		...route,
-		route: route.route.replace(
-			/:(\w+)/g,
-			(match, param) => params[param] || match,
-		),
-	}));
-
 	// Find the matching route for the current pathname
-	const currentRoute = routesWithParams.find((route) => {
-		const routePattern = route.route.replace(/:(\w+)/g, '([^/]+)');
-		const regex = new RegExp(`^${routePattern}$`);
-		return regex.test(location.pathname);
+	const currentRoute = routes.find((route) => {
+		const routePath = route.route.split('?')[0];
+		return matchPath(location.pathname, {
+			path: routePath,
+			exact: true,
+		});
 	});
 
 	const onChange = (activeRoute: string): void => {
@@ -38,14 +38,15 @@ function RouteTab({
 			onChangeHandler(activeRoute);
 		}
 
-		const selectedRoute = routesWithParams.find((e) => e.key === activeRoute);
+		const selectedRoute = routes.find((e) => e.key === activeRoute);
 
 		if (selectedRoute) {
-			history.push(selectedRoute.route);
+			const resolvedRoute = generatePath(selectedRoute.route, params);
+			history.push(resolvedRoute);
 		}
 	};
 
-	const items = routesWithParams.map(({ Component, name, route, key }) => ({
+	const items = routes.map(({ Component, name, route, key }) => ({
 		label: name,
 		key,
 		tabKey: route,
@@ -60,7 +61,16 @@ function RouteTab({
 			defaultActiveKey={currentRoute?.key || activeKey}
 			animated
 			items={items}
-			// eslint-disable-next-line react/jsx-props-no-spreading
+			tabBarExtraContent={
+				showRightSection && (
+					<HeaderRightSection
+						enableAnnouncements={false}
+						enableShare
+						enableFeedback
+					/>
+				)
+			}
+			// eslint-disable-next-line react/jsx-props-no-spreading ---- TODO: remove this once follow the linting rules
 			{...rest}
 		/>
 	);
@@ -68,6 +78,7 @@ function RouteTab({
 
 RouteTab.defaultProps = {
 	onChangeHandler: undefined,
+	showRightSection: true,
 };
 
 export default RouteTab;

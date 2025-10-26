@@ -6,16 +6,18 @@ import (
 )
 
 var (
-	CodeInvalidInput     Code = Code{"invalid_input"}
-	CodeInternal              = Code{"internal"}
-	CodeUnsupported           = Code{"unsupported"}
-	CodeNotFound              = Code{"not_found"}
-	CodeMethodNotAllowed      = Code{"method_not_allowed"}
-	CodeAlreadyExists         = Code{"already_exists"}
-	CodeUnauthenticated       = Code{"unauthenticated"}
-	CodeForbidden             = Code{"forbidden"}
-	CodeCanceled              = Code{"canceled"}
-	CodeTimeout               = Code{"timeout"}
+	CodeInvalidInput       Code = Code{"invalid_input"}
+	CodeInternal                = Code{"internal"}
+	CodeUnsupported             = Code{"unsupported"}
+	CodeNotFound                = Code{"not_found"}
+	CodeMethodNotAllowed        = Code{"method_not_allowed"}
+	CodeAlreadyExists           = Code{"already_exists"}
+	CodeUnauthenticated         = Code{"unauthenticated"}
+	CodeForbidden               = Code{"forbidden"}
+	CodeCanceled                = Code{"canceled"}
+	CodeTimeout                 = Code{"timeout"}
+	CodeUnknown                 = Code{"unknown"}
+	CodeLicenseUnavailable      = Code{"license_unavailable"}
 )
 
 var (

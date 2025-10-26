@@ -2,17 +2,20 @@
 import { render, RenderOptions, RenderResult } from '@testing-library/react';
 import { FeatureKeys } from 'constants/features';
 import { ORG_PREFERENCES } from 'constants/orgPreferences';
-import ROUTES from 'constants/routes';
 import { ResourceProvider } from 'hooks/useResourceAttribute';
 import { AppContext } from 'providers/App/App';
 import { IAppContext } from 'providers/App/types';
 import { ErrorModalProvider } from 'providers/ErrorModalProvider';
-import { QueryBuilderProvider } from 'providers/QueryBuilder';
+import { PreferenceContextProvider } from 'providers/preferences/context/PreferenceContextProvider';
+import {
+	QueryBuilderContext,
+	QueryBuilderProvider,
+} from 'providers/QueryBuilder';
 import TimezoneProvider from 'providers/Timezone';
 import React, { ReactElement } from 'react';
 import { QueryClient, QueryClientProvider } from 'react-query';
 import { Provider } from 'react-redux';
-import { BrowserRouter } from 'react-router-dom';
+import { MemoryRouter } from 'react-router-dom';
 import configureStore from 'redux-mock-store';
 import thunk from 'redux-thunk';
 import store from 'store';
@@ -22,24 +25,27 @@ import {
 	LicenseState,
 	LicenseStatus,
 } from 'types/api/licensesV3/getActive';
-import { ROLES } from 'types/roles';
+import { QueryBuilderContextType } from 'types/common/queryBuilder';
+import { ROLES, USER_ROLES } from 'types/roles';
+// import { MemoryRouter as V5MemoryRouter } from 'react-router-dom-v5-compat';
 
 const queryClient = new QueryClient({
 	defaultOptions: {
 		queries: {
 			refetchOnWindowFocus: false,
+			retry: false,
 		},
 	},
 });
 
 beforeEach(() => {
-	jest.useFakeTimers();
+	// jest.useFakeTimers();
 	jest.setSystemTime(new Date('2023-10-20'));
 });
 
 afterEach(() => {
 	queryClient.clear();
-	jest.useRealTimers();
+	// jest.useRealTimers();
 });
 
 const mockStore = configureStore([thunk]);
@@ -84,24 +90,6 @@ jest.mock('react-i18next', () => ({
 	}),
 }));
 
-jest.mock('react-router-dom', () => ({
-	...jest.requireActual('react-router-dom'),
-	useLocation: (): { pathname: string } => ({
-		pathname: `${process.env.FRONTEND_API_ENDPOINT}/${ROUTES.TRACES_EXPLORER}/`,
-	}),
-}));
-
-jest.mock('hooks/useSafeNavigate', () => ({
-	useSafeNavigate: (): any => ({
-		safeNavigate: jest.fn(),
-	}),
-}));
-
-jest.mock('react-router-dom-v5-compat', () => ({
-	...jest.requireActual('react-router-dom-v5-compat'),
-	useNavigationType: (): any => 'PUSH',
-}));
-
 export function getAppContextMock(
 	role: string,
 	appContextOverrides?: Partial<IAppContext>,
@@ -143,6 +131,7 @@ export function getAppContextMock(
 		},
 		isFetchingActiveLicense: false,
 		activeLicenseFetchError: null,
+		changelog: null,
 		user: {
 			accessJwt: 'some-token',
 			refreshJwt: 'some-refresh-token',
@@ -161,6 +150,7 @@ export function getAppContextMock(
 				displayName: 'Pentagon',
 			},
 		],
+		hasEditPermission: role === USER_ROLES.ADMIN || role === USER_ROLES.EDITOR,
 		isFetchingUser: false,
 		userFetchError: null,
 		featureFlags: [
@@ -232,10 +222,13 @@ export function getAppContextMock(
 		isFetchingOrgPreferences: false,
 		orgPreferencesFetchError: null,
 		isLoggedIn: true,
+		showChangelogModal: false,
 		updateUser: jest.fn(),
 		updateOrg: jest.fn(),
 		updateOrgPreferences: jest.fn(),
 		activeLicenseRefetch: jest.fn(),
+		updateChangelog: jest.fn(),
+		toggleChangelogModal: jest.fn(),
 		versionData: {
 			version: '1.0.0',
 			ee: 'Y',
@@ -247,46 +240,96 @@ export function getAppContextMock(
 
 export function AllTheProviders({
 	children,
-	role, // Accept the role as a prop
+	role,
 	appContextOverrides,
+	queryBuilderOverrides,
+	initialRoute,
 }: {
 	children: React.ReactNode;
-	role: string; // Define the role prop
-	appContextOverrides: Partial<IAppContext>;
+	role?: string;
+	appContextOverrides?: Partial<IAppContext>;
+	queryBuilderOverrides?: Partial<QueryBuilderContextType>;
+	initialRoute?: string;
 }): ReactElement {
-	return (
-		<QueryClientProvider client={queryClient}>
-			<Provider store={mockStored(role)}>
-				<AppContext.Provider value={getAppContextMock(role, appContextOverrides)}>
-					<ResourceProvider>
-						<ErrorModalProvider>
-							<BrowserRouter>
-								<TimezoneProvider>
-									<QueryBuilderProvider>{children}</QueryBuilderProvider>
-								</TimezoneProvider>
-							</BrowserRouter>
-						</ErrorModalProvider>
-					</ResourceProvider>
-				</AppContext.Provider>
-			</Provider>
-		</QueryClientProvider>
+	// Set default values
+	const roleValue = role || 'ADMIN';
+	const appContextOverridesValue = appContextOverrides || {};
+	const initialRouteValue = initialRoute || '/';
+
+	const queryBuilderContent = queryBuilderOverrides ? (
+		<QueryBuilderContext.Provider
+			value={queryBuilderOverrides as QueryBuilderContextType}
+		>
+			{children}
+		</QueryBuilderContext.Provider>
+	) : (
+		<QueryBuilderProvider>{children}</QueryBuilderProvider>
 	);
+
+	return (
+		<MemoryRouter initialEntries={[initialRouteValue]}>
+			<QueryClientProvider client={queryClient}>
+				<Provider store={mockStored(roleValue)}>
+					<AppContext.Provider
+						value={getAppContextMock(roleValue, appContextOverridesValue)}
+					>
+						<ResourceProvider>
+							<ErrorModalProvider>
+								<TimezoneProvider>
+									<PreferenceContextProvider>
+										{queryBuilderContent}
+									</PreferenceContextProvider>
+								</TimezoneProvider>
+							</ErrorModalProvider>
+						</ResourceProvider>
+					</AppContext.Provider>
+				</Provider>
+			</QueryClientProvider>
+		</MemoryRouter>
+	);
+}
+
+AllTheProviders.defaultProps = {
+	role: 'ADMIN',
+	appContextOverrides: {},
+	queryBuilderOverrides: undefined,
+	initialRoute: '/',
+};
+
+interface ProviderProps {
+	role?: string;
+	appContextOverrides?: Partial<IAppContext>;
+	queryBuilderOverrides?: Partial<QueryBuilderContextType>;
+	initialRoute?: string;
 }
 
 const customRender = (
 	ui: ReactElement,
 	options?: Omit<RenderOptions, 'wrapper'>,
-	role = 'ADMIN', // Set a default role
-	appContextOverrides?: Partial<IAppContext>,
-): RenderResult =>
-	render(ui, {
+	providerProps: ProviderProps = {},
+): RenderResult => {
+	const {
+		role = 'ADMIN',
+		appContextOverrides = {},
+		queryBuilderOverrides,
+		initialRoute = '/',
+	} = providerProps;
+
+	return render(ui, {
 		wrapper: () => (
-			<AllTheProviders role={role} appContextOverrides={appContextOverrides || {}}>
+			<AllTheProviders
+				role={role}
+				appContextOverrides={appContextOverrides}
+				queryBuilderOverrides={queryBuilderOverrides}
+				initialRoute={initialRoute}
+			>
 				{ui}
 			</AllTheProviders>
 		),
 		...options,
 	});
+};
 
 export * from '@testing-library/react';
+export { default as userEvent } from '@testing-library/user-event';
 export { customRender as render };

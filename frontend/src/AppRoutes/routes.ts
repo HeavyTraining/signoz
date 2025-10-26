@@ -1,5 +1,6 @@
 import ROUTES from 'constants/routes';
 import MessagingQueues from 'pages/MessagingQueues';
+import MeterExplorer from 'pages/MeterExplorer';
 import { RouteProps } from 'react-router-dom';
 
 import {
@@ -12,7 +13,6 @@ import {
 	CreateNewAlerts,
 	DashboardPage,
 	DashboardWidget,
-	EditAlertChannelsAlerts,
 	EditRulesPage,
 	ErrorDetails,
 	Home,
@@ -254,13 +254,6 @@ const routes: AppRoutes[] = [
 		key: 'CHANNELS_NEW',
 	},
 	{
-		path: ROUTES.CHANNELS_EDIT,
-		exact: true,
-		component: EditAlertChannelsAlerts,
-		isPrivate: true,
-		key: 'CHANNELS_EDIT',
-	},
-	{
 		path: ROUTES.ALL_CHANNELS,
 		exact: true,
 		component: AllAlertChannels,
@@ -440,6 +433,28 @@ const routes: AppRoutes[] = [
 		exact: true,
 		component: MetricsExplorer,
 		key: 'METRICS_EXPLORER_VIEWS',
+		isPrivate: true,
+	},
+
+	{
+		path: ROUTES.METER,
+		exact: true,
+		component: MeterExplorer,
+		key: 'METER',
+		isPrivate: true,
+	},
+	{
+		path: ROUTES.METER_EXPLORER,
+		exact: true,
+		component: MeterExplorer,
+		key: 'METER_EXPLORER',
+		isPrivate: true,
+	},
+	{
+		path: ROUTES.METER_EXPLORER_VIEWS,
+		exact: true,
+		component: MeterExplorer,
+		key: 'METER_EXPLORER_VIEWS',
 		isPrivate: true,
 	},
 	{

@@ -2,7 +2,7 @@ import { FORMULA_REGEXP } from 'constants/regExp';
 import { isEmpty, isEqual } from 'lodash-es';
 import { Layout } from 'react-grid-layout';
 import { Dashboard, Widgets } from 'types/api/dashboard/getAll';
-import { Query } from 'types/api/queryBuilder/queryBuilderData';
+import { IBuilderQuery, Query } from 'types/api/queryBuilder/queryBuilderData';
 
 export const removeUndefinedValuesFromLayout = (layout: Layout[]): Layout[] =>
 	layout.map((obj) =>
@@ -57,6 +57,8 @@ export const hasColumnWidthsChanged = (
  * Calculates the step interval in uPlot points (1 minute = 60 points)
  * based on the time duration between two timestamps in nanoseconds.
  *
+ * NOTE: This function is specifically designed for BAR visualization panels only.
+ *
  * Conversion logic:
  * - <= 1 hr     → 1 min (60 points)
  * - <= 3 hr     → 2 min (120 points)
@@ -67,7 +69,7 @@ export const hasColumnWidthsChanged = (
  * @param endNano - end time in nanoseconds
  * @returns stepInterval in uPlot points
  */
-export function getStepIntervalPoints(
+export function getBarStepIntervalPoints(
 	startNano: number,
 	endNano: number,
 ): number {
@@ -92,12 +94,18 @@ export function getStepIntervalPoints(
 	return roundedInterval * 60; // convert min to points
 }
 
-export function updateStepInterval(
+export function updateBarStepInterval(
 	query: Query,
 	minTime: number,
 	maxTime: number,
 ): Query {
-	const stepIntervalPoints = getStepIntervalPoints(minTime, maxTime);
+	const stepIntervalPoints = getBarStepIntervalPoints(minTime, maxTime);
+
+	// if user haven't enter anything manually, that is we have default value of 60 then do the interval adjustment for bar otherwise apply the user's value
+	const getBarSteps = (queryData: IBuilderQuery): number | null =>
+		!queryData.stepInterval
+			? stepIntervalPoints || null
+			: queryData?.stepInterval;
 
 	return {
 		...query,
@@ -106,7 +114,7 @@ export function updateStepInterval(
 			queryData: [
 				...(query?.builder?.queryData ?? []).map((queryData) => ({
 					...queryData,
-					stepInterval: stepIntervalPoints || queryData?.stepInterval || 60,
+					stepInterval: getBarSteps(queryData),
 				})),
 			],
 		},

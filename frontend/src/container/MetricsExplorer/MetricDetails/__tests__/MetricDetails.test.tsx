@@ -1,16 +1,17 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { MetricDetails } from 'api/metricsExplorer/getMetricDetails';
+import { MetricDetails as MetricDetailsType } from 'api/metricsExplorer/getMetricDetails';
 import { MetricType } from 'api/metricsExplorer/getMetricsList';
+import { getUniversalNameFromMetricUnit } from 'components/YAxisUnitSelector/utils';
 import ROUTES from 'constants/routes';
 import * as useGetMetricDetails from 'hooks/metricsExplorer/useGetMetricDetails';
 import * as useUpdateMetricMetadata from 'hooks/metricsExplorer/useUpdateMetricMetadata';
 import * as useHandleExplorerTabChange from 'hooks/useHandleExplorerTabChange';
 
-import MetricDetailsView from '../MetricDetails';
+import MetricDetails from '../MetricDetails';
 
 const mockMetricName = 'test-metric';
 const mockMetricDescription = 'description for a test metric';
-const mockMetricData: MetricDetails = {
+const mockMetricData: MetricDetailsType = {
 	name: mockMetricName,
 	description: mockMetricDescription,
 	unit: 'count',
@@ -80,11 +81,17 @@ jest.mock('hooks/useSafeNavigate', () => ({
 		safeNavigate: jest.fn(),
 	}),
 }));
+jest.mock('react-query', () => ({
+	...jest.requireActual('react-query'),
+	useQueryClient: (): { invalidateQueries: () => void } => ({
+		invalidateQueries: jest.fn(),
+	}),
+}));
 
 describe('MetricDetails', () => {
 	it('renders metric details correctly', () => {
 		render(
-			<MetricDetailsView
+			<MetricDetails
 				onClose={mockOnClose}
 				isOpen
 				isModalTimeSelection
@@ -95,7 +102,9 @@ describe('MetricDetails', () => {
 
 		expect(screen.getByText(mockMetricName)).toBeInTheDocument();
 		expect(screen.getByText(mockMetricDescription)).toBeInTheDocument();
-		expect(screen.getByText(`${mockMetricData.unit}`)).toBeInTheDocument();
+		expect(
+			screen.getByText(getUniversalNameFromMetricUnit(mockMetricData.unit)),
+		).toBeInTheDocument();
 	});
 
 	it('renders the "open in explorer" and "inspect" buttons', () => {
@@ -114,7 +123,7 @@ describe('MetricDetails', () => {
 			},
 		} as any);
 		render(
-			<MetricDetailsView
+			<MetricDetails
 				onClose={mockOnClose}
 				isOpen
 				metricName={mockMetricName}
@@ -143,7 +152,7 @@ describe('MetricDetails', () => {
 		} as any);
 
 		render(
-			<MetricDetailsView
+			<MetricDetails
 				onClose={mockOnClose}
 				isOpen
 				metricName={mockMetricName}
@@ -162,7 +171,7 @@ describe('MetricDetails', () => {
 		} as any);
 
 		render(
-			<MetricDetailsView
+			<MetricDetails
 				onClose={mockOnClose}
 				isOpen
 				metricName={mockMetricName}
@@ -179,7 +188,7 @@ describe('MetricDetails', () => {
 			.spyOn(useGetMetricDetails, 'useGetMetricDetails')
 			.mockReturnValue(mockUseGetMetricDetailsData as any);
 		render(
-			<MetricDetailsView
+			<MetricDetails
 				onClose={mockOnClose}
 				isOpen
 				metricName={mockMetricName}
@@ -204,7 +213,7 @@ describe('MetricDetails', () => {
 			},
 		} as any);
 		render(
-			<MetricDetailsView
+			<MetricDetails
 				onClose={mockOnClose}
 				isOpen
 				metricName={mockMetricName}

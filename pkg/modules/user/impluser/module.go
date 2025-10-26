@@ -3,7 +3,6 @@ package impluser
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -13,21 +12,18 @@ import (
 	"github.com/SigNoz/signoz/pkg/errors"
 	"github.com/SigNoz/signoz/pkg/factory"
 	"github.com/SigNoz/signoz/pkg/modules/organization"
-	"github.com/SigNoz/signoz/pkg/modules/user"
-	"github.com/SigNoz/signoz/pkg/query-service/constants"
-	"github.com/SigNoz/signoz/pkg/query-service/model"
-	"github.com/SigNoz/signoz/pkg/query-service/telemetry"
+	root "github.com/SigNoz/signoz/pkg/modules/user"
+	"github.com/SigNoz/signoz/pkg/tokenizer"
 	"github.com/SigNoz/signoz/pkg/types"
-	"github.com/SigNoz/signoz/pkg/types/analyticstypes"
-	"github.com/SigNoz/signoz/pkg/types/authtypes"
 	"github.com/SigNoz/signoz/pkg/types/emailtypes"
 	"github.com/SigNoz/signoz/pkg/valuer"
-	"github.com/google/uuid"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 type Module struct {
 	store     types.UserStore
-	jwt       *authtypes.JWT
+	tokenizer tokenizer.Tokenizer
 	emailing  emailing.Emailing
 	settings  factory.ScopedProviderSettings
 	orgSetter organization.Setter
@@ -35,11 +31,11 @@ type Module struct {
 }
 
 // This module is a WIP, don't take inspiration from this.
-func NewModule(store types.UserStore, jwt *authtypes.JWT, emailing emailing.Emailing, providerSettings factory.ProviderSettings, orgSetter organization.Setter, analytics analytics.Analytics) user.Module {
+func NewModule(store types.UserStore, tokenizer tokenizer.Tokenizer, emailing emailing.Emailing, providerSettings factory.ProviderSettings, orgSetter organization.Setter, analytics analytics.Analytics) root.Module {
 	settings := factory.NewScopedProviderSettings(providerSettings, "github.com/SigNoz/signoz/pkg/modules/user/impluser")
 	return &Module{
 		store:     store,
-		jwt:       jwt,
+		tokenizer: tokenizer,
 		emailing:  emailing,
 		settings:  settings,
 		orgSetter: orgSetter,
@@ -47,9 +43,46 @@ func NewModule(store types.UserStore, jwt *authtypes.JWT, emailing emailing.Emai
 	}
 }
 
+func (m *Module) AcceptInvite(ctx context.Context, token string, password string) (*types.User, error) {
+	invite, err := m.store.GetInviteByToken(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+
+	user, err := types.NewUser(invite.Name, invite.Email, invite.Role, invite.OrgID)
+	if err != nil {
+		return nil, err
+	}
+
+	factorPassword, err := types.NewFactorPassword(password, user.ID.StringValue())
+	if err != nil {
+		return nil, err
+	}
+
+	err = m.CreateUser(ctx, user, root.WithFactorPassword(factorPassword))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := m.DeleteInvite(ctx, invite.OrgID.String(), invite.ID); err != nil {
+		return nil, err
+	}
+
+	return user, nil
+}
+
+func (m *Module) GetInviteByToken(ctx context.Context, token string) (*types.Invite, error) {
+	invite, err := m.store.GetInviteByToken(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+
+	return invite, nil
+}
+
 // CreateBulk implements invite.Module.
-func (m *Module) CreateBulkInvite(ctx context.Context, orgID, userID string, bulkInvites *types.PostableBulkInviteRequest) ([]*types.Invite, error) {
-	creator, err := m.GetUserByID(ctx, orgID, userID)
+func (m *Module) CreateBulkInvite(ctx context.Context, orgID valuer.UUID, userID valuer.UUID, bulkInvites *types.PostableBulkInviteRequest) ([]*types.Invite, error) {
+	creator, err := m.store.GetUser(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -58,16 +91,17 @@ func (m *Module) CreateBulkInvite(ctx context.Context, orgID, userID string, bul
 
 	for _, invite := range bulkInvites.Invites {
 		// check if user exists
-		existingUser, err := m.GetUserByEmailInOrg(ctx, orgID, invite.Email)
+		existingUser, err := m.store.GetUserByEmailAndOrgID(ctx, invite.Email, orgID)
 		if err != nil && !errors.Ast(err, errors.TypeNotFound) {
 			return nil, err
 		}
+
 		if existingUser != nil {
 			return nil, errors.New(errors.TypeAlreadyExists, errors.CodeAlreadyExists, "User already exists with the same email")
 		}
 
 		// Check if an invite already exists
-		existingInvite, err := m.GetInviteByEmailInOrg(ctx, orgID, invite.Email)
+		existingInvite, err := m.store.GetInviteByEmailAndOrgID(ctx, invite.Email, orgID)
 		if err != nil && !errors.Ast(err, errors.TypeNotFound) {
 			return nil, err
 		}
@@ -80,10 +114,11 @@ func (m *Module) CreateBulkInvite(ctx context.Context, orgID, userID string, bul
 			return nil, err
 		}
 
-		newInvite, err := types.NewInvite(orgID, role.String(), invite.Name, invite.Email)
+		newInvite, err := types.NewInvite(invite.Name, role, orgID, invite.Email)
 		if err != nil {
 			return nil, err
 		}
+
 		newInvite.InviteLink = fmt.Sprintf("%s/signup?token=%s", invite.FrontendBaseUrl, newInvite.Token)
 		invites = append(invites, newInvite)
 	}
@@ -93,13 +128,16 @@ func (m *Module) CreateBulkInvite(ctx context.Context, orgID, userID string, bul
 		return nil, err
 	}
 
-	// send telemetry event
 	for i := 0; i < len(invites); i++ {
-		telemetry.GetInstance().SendEvent(telemetry.TELEMETRY_EVENT_USER_INVITATION_SENT, map[string]interface{}{
-			"invited user email": invites[i].Email,
-		}, creator.Email, true, false)
+		m.analytics.TrackUser(ctx, orgID.String(), creator.ID.String(), "Invite Sent", map[string]any{"invitee_email": invites[i].Email, "invitee_role": invites[i].Role})
 
-		if err := m.emailing.SendHTML(ctx, invites[i].Email, "You are invited to join a team in SigNoz", emailtypes.TemplateNameInvitationEmail, map[string]any{
+		// if the frontend base url is not provided, we don't send the email
+		if bulkInvites.Invites[i].FrontendBaseUrl == "" {
+			m.settings.Logger().InfoContext(ctx, "frontend base url is not provided, skipping email", "invitee_email", invites[i].Email)
+			continue
+		}
+
+		if err := m.emailing.SendHTML(ctx, invites[i].Email.String(), "You are invited to join a team in SigNoz", emailtypes.TemplateNameInvitationEmail, map[string]any{
 			"CustomerName": invites[i].Name,
 			"InviterName":  creator.DisplayName,
 			"InviterEmail": creator.Email,
@@ -121,453 +159,233 @@ func (m *Module) DeleteInvite(ctx context.Context, orgID string, id valuer.UUID)
 	return m.store.DeleteInvite(ctx, orgID, id)
 }
 
-func (m *Module) GetInviteByToken(ctx context.Context, token string) (*types.GettableInvite, error) {
-	return m.store.GetInviteByToken(ctx, token)
-}
+func (module *Module) CreateUser(ctx context.Context, input *types.User, opts ...root.CreateUserOption) error {
+	createUserOpts := root.NewCreateUserOptions(opts...)
 
-func (m *Module) GetInviteByEmailInOrg(ctx context.Context, orgID string, email string) (*types.Invite, error) {
-	return m.store.GetInviteByEmailInOrg(ctx, orgID, email)
-}
+	if err := module.store.RunInTx(ctx, func(ctx context.Context) error {
+		if err := module.store.CreateUser(ctx, input); err != nil {
+			return err
+		}
 
-func (m *Module) CreateUserWithPassword(ctx context.Context, user *types.User, password *types.FactorPassword) (*types.User, error) {
-	user, err := m.store.CreateUserWithPassword(ctx, user, password)
-	if err != nil {
-		return nil, err
-	}
+		if createUserOpts.FactorPassword != nil {
+			if err := module.store.CreatePassword(ctx, createUserOpts.FactorPassword); err != nil {
+				return err
+			}
+		}
 
-	m.analytics.Send(ctx,
-		analyticstypes.Identify{
-			UserId: user.ID.String(),
-			Traits: analyticstypes.
-				NewTraits().
-				SetName(user.DisplayName).
-				SetEmail(user.Email).
-				Set("role", user.Role).
-				SetCreatedAt(user.CreatedAt),
-		},
-		analyticstypes.Group{
-			UserId:  user.ID.String(),
-			GroupId: user.OrgID,
-		},
-		analyticstypes.Track{
-			UserId: user.ID.String(),
-			Event:  "User Created",
-			Properties: analyticstypes.NewPropertiesFromMap(map[string]any{
-				"role":  user.Role,
-				"email": user.Email,
-				"name":  user.DisplayName,
-			}),
-			Context: &analyticstypes.Context{
-				Extra: map[string]interface{}{
-					analyticstypes.KeyGroupID: user.OrgID,
-				},
-			},
-		},
-	)
-
-	return user, nil
-}
-
-func (m *Module) CreateUser(ctx context.Context, user *types.User) error {
-	if err := m.store.CreateUser(ctx, user); err != nil {
+		return nil
+	}); err != nil {
 		return err
 	}
 
-	m.analytics.Send(ctx,
-		analyticstypes.Identify{
-			UserId: user.ID.String(),
-			Traits: analyticstypes.
-				NewTraits().
-				SetName(user.DisplayName).
-				SetEmail(user.Email).
-				Set("role", user.Role).
-				SetCreatedAt(user.CreatedAt),
-		},
-		analyticstypes.Group{
-			UserId:  user.ID.String(),
-			GroupId: user.OrgID,
-		},
-		analyticstypes.Track{
-			UserId: user.ID.String(),
-			Event:  "User Created",
-			Properties: analyticstypes.NewPropertiesFromMap(map[string]any{
-				"role":  user.Role,
-				"email": user.Email,
-				"name":  user.DisplayName,
-			}),
-			Context: &analyticstypes.Context{
-				Extra: map[string]interface{}{
-					analyticstypes.KeyGroupID: user.OrgID,
-				},
-			},
-		},
-	)
+	traitsOrProperties := types.NewTraitsFromUser(input)
+	module.analytics.IdentifyUser(ctx, input.OrgID.String(), input.ID.String(), traitsOrProperties)
+	module.analytics.TrackUser(ctx, input.OrgID.String(), input.ID.String(), "User Created", traitsOrProperties)
 
 	return nil
 }
 
-func (m *Module) GetUserByID(ctx context.Context, orgID string, id string) (*types.GettableUser, error) {
-	return m.store.GetUserByID(ctx, orgID, id)
+func (m *Module) UpdateUser(ctx context.Context, orgID valuer.UUID, id string, user *types.User, updatedBy string) (*types.User, error) {
+	existingUser, err := m.store.GetUser(ctx, valuer.MustNewUUID(id))
+	if err != nil {
+		return nil, err
+	}
+
+	requestor, err := m.store.GetUser(ctx, valuer.MustNewUUID(updatedBy))
+	if err != nil {
+		return nil, err
+	}
+
+	// only displayName, role can be updated
+	if user.DisplayName == "" {
+		user.DisplayName = existingUser.DisplayName
+	}
+
+	if user.Role == "" {
+		user.Role = existingUser.Role
+	}
+
+	if user.Role != existingUser.Role && requestor.Role != types.RoleAdmin {
+		return nil, errors.New(errors.TypeForbidden, errors.CodeForbidden, "only admins can change roles")
+	}
+
+	// Make sure that th e request is not demoting the last admin user.
+	// also an admin user can only change role of their own or other user
+	if user.Role != existingUser.Role && existingUser.Role == types.RoleAdmin {
+		adminUsers, err := m.store.GetUsersByRoleAndOrgID(ctx, types.RoleAdmin, orgID)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(adminUsers) == 1 {
+			return nil, errors.New(errors.TypeForbidden, errors.CodeForbidden, "cannot demote the last admin")
+		}
+	}
+
+	user.UpdatedAt = time.Now()
+
+	updatedUser, err := m.store.UpdateUser(ctx, orgID, id, user)
+	if err != nil {
+		return nil, err
+	}
+
+	traits := types.NewTraitsFromUser(updatedUser)
+	m.analytics.IdentifyUser(ctx, user.OrgID.String(), user.ID.String(), traits)
+
+	traits["updated_by"] = updatedBy
+	m.analytics.TrackUser(ctx, user.OrgID.String(), user.ID.String(), "User Updated", traits)
+
+	// if the role is updated then send an email
+	if existingUser.Role != updatedUser.Role {
+		if err := m.emailing.SendHTML(ctx, existingUser.Email.String(), "Your Role Has Been Updated in SigNoz", emailtypes.TemplateNameUpdateRole, map[string]any{
+			"CustomerName":   existingUser.DisplayName,
+			"UpdatedByEmail": requestor.Email,
+			"OldRole":        cases.Title(language.English).String(strings.ToLower(existingUser.Role.String())),
+			"NewRole":        cases.Title(language.English).String(strings.ToLower(updatedUser.Role.String())),
+		}); err != nil {
+			m.settings.Logger().ErrorContext(ctx, "failed to send email", "error", err)
+		}
+	}
+
+	if err := m.tokenizer.DeleteIdentity(ctx, valuer.MustNewUUID(id)); err != nil {
+		return nil, err
+	}
+
+	return updatedUser, nil
 }
 
-func (m *Module) GetUserByEmailInOrg(ctx context.Context, orgID string, email string) (*types.GettableUser, error) {
-	return m.store.GetUserByEmailInOrg(ctx, orgID, email)
-}
-
-func (m *Module) GetUsersByEmail(ctx context.Context, email string) ([]*types.GettableUser, error) {
-	return m.store.GetUsersByEmail(ctx, email)
-}
-
-func (m *Module) GetUsersByRoleInOrg(ctx context.Context, orgID string, role types.Role) ([]*types.GettableUser, error) {
-	return m.store.GetUsersByRoleInOrg(ctx, orgID, role)
-}
-
-func (m *Module) ListUsers(ctx context.Context, orgID string) ([]*types.GettableUser, error) {
-	return m.store.ListUsers(ctx, orgID)
-}
-
-func (m *Module) UpdateUser(ctx context.Context, orgID string, id string, user *types.User) (*types.User, error) {
-	return m.store.UpdateUser(ctx, orgID, id, user)
-}
-
-func (m *Module) DeleteUser(ctx context.Context, orgID string, id string) error {
-	user, err := m.store.GetUserByID(ctx, orgID, id)
+func (m *Module) DeleteUser(ctx context.Context, orgID valuer.UUID, id string, deletedBy string) error {
+	user, err := m.store.GetUser(ctx, valuer.MustNewUUID(id))
 	if err != nil {
 		return err
 	}
 
-	if slices.Contains(types.AllIntegrationUserEmails, types.IntegrationUserEmail(user.Email)) {
+	if slices.Contains(types.AllIntegrationUserEmails, types.IntegrationUserEmail(user.Email.String())) {
 		return errors.New(errors.TypeForbidden, errors.CodeForbidden, "integration user cannot be deleted")
 	}
 
 	// don't allow to delete the last admin user
-	adminUsers, err := m.GetUsersByRoleInOrg(ctx, orgID, types.RoleAdmin)
+	adminUsers, err := m.store.GetUsersByRoleAndOrgID(ctx, types.RoleAdmin, orgID)
 	if err != nil {
 		return err
 	}
 
-	if len(adminUsers) == 1 && user.Role == types.RoleAdmin.String() {
+	if len(adminUsers) == 1 && user.Role == types.RoleAdmin {
 		return errors.New(errors.TypeForbidden, errors.CodeForbidden, "cannot delete the last admin")
 	}
 
-	return m.store.DeleteUser(ctx, orgID, user.ID.StringValue())
+	if err := m.store.DeleteUser(ctx, orgID.String(), user.ID.StringValue()); err != nil {
+		return err
+	}
+
+	m.analytics.TrackUser(ctx, user.OrgID.String(), user.ID.String(), "User Deleted", map[string]any{
+		"deleted_by": deletedBy,
+	})
+
+	return nil
 }
 
-func (m *Module) CreateResetPasswordToken(ctx context.Context, userID string) (*types.ResetPasswordRequest, error) {
-	password, err := m.store.GetPasswordByUserID(ctx, userID)
+func (module *Module) GetOrCreateResetPasswordToken(ctx context.Context, userID valuer.UUID) (*types.ResetPasswordToken, error) {
+	password, err := module.store.GetPasswordByUserID(ctx, userID)
 	if err != nil {
-		// if the user does not have a password, we need to create a new one
-		// this will happen for SSO users
-		if errors.Ast(err, errors.TypeNotFound) {
-			password, err = m.store.CreatePassword(ctx, &types.FactorPassword{
-				Identifiable: types.Identifiable{
-					ID: valuer.GenerateUUID(),
-				},
-				TimeAuditable: types.TimeAuditable{
-					CreatedAt: time.Now(),
-				},
-				Password: valuer.GenerateUUID().String(),
-				UserID:   userID,
-			})
-			if err != nil {
-				return nil, err
-			}
-		} else {
+		if !errors.Ast(err, errors.TypeNotFound) {
 			return nil, err
 		}
 	}
 
-	resetPasswordRequest, err := types.NewResetPasswordRequest(password.ID.StringValue())
+	if password == nil {
+		// if the user does not have a password, we need to create a new one (common for SSO/SAML users)
+		password = types.MustGenerateFactorPassword(userID.String())
+
+		if err := module.store.CreatePassword(ctx, password); err != nil {
+			return nil, err
+		}
+	}
+
+	resetPasswordToken, err := types.NewResetPasswordToken(password.ID)
 	if err != nil {
 		return nil, err
 	}
 
-	// check if a reset password token already exists for this user
-	existingRequest, err := m.store.GetResetPasswordByPasswordID(ctx, resetPasswordRequest.PasswordID)
-	if err != nil && !errors.Ast(err, errors.TypeNotFound) {
-		return nil, err
-	}
-
-	if existingRequest != nil {
-		return existingRequest, nil
-	}
-
-	err = m.store.CreateResetPasswordToken(ctx, resetPasswordRequest)
+	err = module.store.CreateResetPasswordToken(ctx, resetPasswordToken)
 	if err != nil {
-		return nil, err
-	}
-
-	return resetPasswordRequest, nil
-}
-
-func (m *Module) GetPasswordByUserID(ctx context.Context, id string) (*types.FactorPassword, error) {
-	return m.store.GetPasswordByUserID(ctx, id)
-}
-
-func (m *Module) GetResetPassword(ctx context.Context, token string) (*types.ResetPasswordRequest, error) {
-	return m.store.GetResetPassword(ctx, token)
-}
-
-func (m *Module) UpdatePasswordAndDeleteResetPasswordEntry(ctx context.Context, passwordID string, password string) error {
-	hashedPassword, err := types.HashPassword(password)
-	if err != nil {
-		return err
-	}
-
-	existingPassword, err := m.store.GetPasswordByID(ctx, passwordID)
-	if err != nil {
-		return err
-	}
-
-	return m.store.UpdatePasswordAndDeleteResetPasswordEntry(ctx, existingPassword.UserID, hashedPassword)
-}
-
-func (m *Module) UpdatePassword(ctx context.Context, userID string, password string) error {
-	hashedPassword, err := types.HashPassword(password)
-	if err != nil {
-		return err
-	}
-	return m.store.UpdatePassword(ctx, userID, hashedPassword)
-}
-
-func (m *Module) GetAuthenticatedUser(ctx context.Context, orgID, email, password, refreshToken string) (*types.User, error) {
-	if refreshToken != "" {
-		// parse the refresh token
-		claims, err := m.jwt.Claims(refreshToken)
-		if err != nil {
+		if !errors.Ast(err, errors.TypeAlreadyExists) {
 			return nil, err
 		}
 
-		user, err := m.store.GetUserByID(ctx, claims.OrgID, claims.UserID)
+		// if the token already exists, we return the existing token
+		resetPasswordToken, err = module.store.GetResetPasswordTokenByPasswordID(ctx, password.ID)
 		if err != nil {
 			return nil, err
 		}
-		return &user.User, nil
 	}
 
-	var dbUser *types.User
-	// when the orgID is not provided we login if the user exists in just one org
-	users, err := m.store.GetUsersByEmail(ctx, email)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(users) == 0 {
-		return nil, errors.Newf(errors.TypeInvalidInput, errors.CodeInvalidInput, "user with email: %s does not exist", email)
-	} else if len(users) == 1 {
-		dbUser = &users[0].User
-	} else {
-		return nil, errors.New(errors.TypeInvalidInput, errors.CodeInvalidInput, "please provide an orgID")
-	}
-
-	existingPassword, err := m.store.GetPasswordByUserID(ctx, dbUser.ID.StringValue())
-	if err != nil {
-		return nil, err
-	}
-
-	if !types.ComparePassword(existingPassword.Password, password) {
-		return nil, errors.New(errors.TypeInvalidInput, errors.CodeInvalidInput, "invalid password")
-	}
-
-	return dbUser, nil
+	return resetPasswordToken, nil
 }
 
-func (m *Module) LoginPrecheck(ctx context.Context, orgID, email, sourceUrl string) (*types.GettableLoginPrecheck, error) {
-	// assume user is valid unless proven otherwise and assign default values for rest of the fields
-	resp := &types.GettableLoginPrecheck{IsUser: true, CanSelfRegister: false, SSO: false, SSOUrl: "", SSOError: ""}
-
-	// check if email is a valid user
-	users, err := m.GetUsersByEmail(ctx, email)
+func (module *Module) UpdatePasswordByResetPasswordToken(ctx context.Context, token string, passwd string) error {
+	resetPasswordToken, err := module.store.GetResetPasswordToken(ctx, token)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	if len(users) == 0 {
-		resp.IsUser = false
+	password, err := module.store.GetPassword(ctx, resetPasswordToken.PasswordID)
+	if err != nil {
+		return err
 	}
 
-	if len(users) > 1 {
-		resp.SelectOrg = true
-		resp.Orgs = make([]string, len(users))
-		for i, user := range users {
-			resp.Orgs[i] = user.OrgID
-		}
+	if err := password.Update(passwd); err != nil {
+		return err
 	}
 
-	// TODO(Nitya): in multitenancy this should use orgId as well.
-	orgDomain, err := m.GetAuthDomainByEmail(ctx, email)
-	if err != nil && !errors.Ast(err, errors.TypeNotFound) {
-		return nil, err
-	}
-
-	if orgDomain != nil && orgDomain.SsoEnabled {
-		// this is to allow self registration
-		resp.IsUser = true
-
-		// saml is enabled for this domain, lets prepare sso url
-		if sourceUrl == "" {
-			sourceUrl = constants.GetDefaultSiteURL()
-		}
-
-		// parse source url that generated the login request
-		var err error
-		escapedUrl, _ := url.QueryUnescape(sourceUrl)
-		siteUrl, err := url.Parse(escapedUrl)
-		if err != nil {
-			return nil, errors.New(errors.TypeInvalidInput, errors.CodeInvalidInput, "failed to parse referer")
-		}
-
-		// build Idp URL that will authenticat the user
-		// the front-end will redirect user to this url
-		resp.SSOUrl, err = orgDomain.BuildSsoUrl(siteUrl)
-		if err != nil {
-			m.settings.Logger().ErrorContext(ctx, "failed to prepare saml request for domain", "domain", orgDomain.Name, "error", err)
-			return nil, errors.New(errors.TypeInternal, errors.CodeInternal, "failed to prepare saml request for domain")
-		}
-
-		// set SSO to true, as the url is generated correctly
-		resp.SSO = true
-	}
-
-	return resp, nil
+	return module.store.UpdatePassword(ctx, password)
 }
 
-func (m *Module) GetJWTForUser(ctx context.Context, user *types.User) (types.GettableUserJwt, error) {
-	role, err := types.NewRole(user.Role)
+func (module *Module) UpdatePassword(ctx context.Context, userID valuer.UUID, oldpasswd string, passwd string) error {
+	password, err := module.store.GetPasswordByUserID(ctx, userID)
 	if err != nil {
-		return types.GettableUserJwt{}, err
+		return err
 	}
 
-	accessJwt, accessClaims, err := m.jwt.AccessToken(user.OrgID, user.ID.String(), user.Email, role)
-	if err != nil {
-		return types.GettableUserJwt{}, err
+	if !password.Equals(oldpasswd) {
+		return errors.New(errors.TypeInvalidInput, types.ErrCodeIncorrectPassword, "old password is incorrect")
 	}
 
-	refreshJwt, refreshClaims, err := m.jwt.RefreshToken(user.OrgID, user.ID.String(), user.Email, role)
-	if err != nil {
-		return types.GettableUserJwt{}, err
+	if err := password.Update(passwd); err != nil {
+		return err
 	}
 
-	return types.GettableUserJwt{
-		AccessJwt:        accessJwt,
-		RefreshJwt:       refreshJwt,
-		AccessJwtExpiry:  accessClaims.ExpiresAt.Unix(),
-		RefreshJwtExpiry: refreshClaims.ExpiresAt.Unix(),
-	}, nil
+	if err := module.store.UpdatePassword(ctx, password); err != nil {
+		return err
+	}
+
+	return module.tokenizer.DeleteTokensByUserID(ctx, userID)
 }
 
-func (m *Module) CreateUserForSAMLRequest(ctx context.Context, email string) (*types.User, error) {
-	// get auth domain from email domain
-	_, err := m.GetAuthDomainByEmail(ctx, email)
-	if err != nil && !errors.Ast(err, errors.TypeNotFound) {
-		return nil, err
-	}
-
-	// get name from email
-	parts := strings.Split(email, "@")
-	if len(parts) < 2 {
-		return nil, errors.New(errors.TypeInvalidInput, errors.CodeInvalidInput, "invalid email format")
-	}
-	name := parts[0]
-
-	defaultOrgID, err := m.store.GetDefaultOrgID(ctx)
+func (module *Module) GetOrCreateUser(ctx context.Context, user *types.User, opts ...root.CreateUserOption) (*types.User, error) {
+	existingUser, err := module.store.GetUserByEmailAndOrgID(ctx, user.Email, user.OrgID)
 	if err != nil {
-		return nil, err
-	}
-
-	user, err := types.NewUser(name, email, types.RoleViewer.String(), defaultOrgID)
-	if err != nil {
-		return nil, err
-	}
-
-	err = m.CreateUser(ctx, user)
-	if err != nil {
-		return nil, err
-	}
-
-	return user, nil
-
-}
-
-func (m *Module) PrepareSsoRedirect(ctx context.Context, redirectUri, email string, jwt *authtypes.JWT) (string, error) {
-	users, err := m.GetUsersByEmail(ctx, email)
-	if err != nil {
-		m.settings.Logger().ErrorContext(ctx, "failed to get user with email received from auth provider", "error", err)
-		return "", err
-	}
-	user := &types.User{}
-
-	if len(users) == 0 {
-		newUser, err := m.CreateUserForSAMLRequest(ctx, email)
-		user = newUser
-		if err != nil {
-			m.settings.Logger().ErrorContext(ctx, "failed to create user with email received from auth provider", "error", err)
-			return "", err
+		if !errors.Ast(err, errors.TypeNotFound) {
+			return nil, err
 		}
-	} else {
-		user = &users[0].User
 	}
 
-	tokenStore, err := m.GetJWTForUser(ctx, user)
-	if err != nil {
-		m.settings.Logger().ErrorContext(ctx, "failed to generate token for SSO login user", "error", err)
-		return "", err
+	if existingUser != nil {
+		return existingUser, nil
 	}
 
-	return fmt.Sprintf("%s?jwt=%s&usr=%s&refreshjwt=%s",
-		redirectUri,
-		tokenStore.AccessJwt,
-		user.ID,
-		tokenStore.RefreshJwt), nil
-}
-
-func (m *Module) CanUsePassword(ctx context.Context, email string) (bool, error) {
-	domain, err := m.GetAuthDomainByEmail(ctx, email)
-	if err != nil && !errors.Ast(err, errors.TypeNotFound) {
-		return false, err
-	}
-
-	if domain != nil && domain.SsoEnabled {
-		// sso is enabled, check if the user has admin role
-		users, err := m.GetUsersByEmail(ctx, email)
-		if err != nil {
-			return false, err
-		}
-
-		if len(users) == 0 {
-			return false, errors.New(errors.TypeNotFound, errors.CodeNotFound, "user not found")
-		}
-
-		if users[0].Role != types.RoleAdmin.String() {
-			return false, errors.New(errors.TypeForbidden, errors.CodeForbidden, "auth method not supported")
-		}
-
-	}
-
-	return true, nil
-}
-
-func (m *Module) GetAuthDomainByEmail(ctx context.Context, email string) (*types.GettableOrgDomain, error) {
-
-	if email == "" {
-		return nil, errors.New(errors.TypeInvalidInput, errors.CodeInvalidInput, "email is required")
-	}
-
-	components := strings.Split(email, "@")
-	if len(components) < 2 {
-		return nil, errors.New(errors.TypeInvalidInput, errors.CodeInvalidInput, "invalid email format")
-	}
-
-	domain, err := m.store.GetDomainByName(ctx, components[1])
+	newUser, err := types.NewUser(user.DisplayName, user.Email, user.Role, user.OrgID)
 	if err != nil {
 		return nil, err
 	}
 
-	gettableDomain := &types.GettableOrgDomain{StorableOrgDomain: *domain}
-	if err := gettableDomain.LoadConfig(domain.Data); err != nil {
-		return nil, errors.Wrapf(err, errors.TypeInternal, errors.CodeInternal, "failed to load domain config")
+	err = module.CreateUser(ctx, newUser, opts...)
+	if err != nil {
+		return nil, err
 	}
-	return gettableDomain, nil
+
+	return newUser, nil
+
 }
 
 func (m *Module) CreateAPIKey(ctx context.Context, apiKey *types.StorableAPIKey) error {
@@ -590,64 +408,47 @@ func (m *Module) RevokeAPIKey(ctx context.Context, id, removedByUserID valuer.UU
 	return m.store.RevokeAPIKey(ctx, id, removedByUserID)
 }
 
-func (m *Module) GetDomainFromSsoResponse(ctx context.Context, url *url.URL) (*types.GettableOrgDomain, error) {
-	return m.store.GetDomainFromSsoResponse(ctx, url)
-}
-
-func (m *Module) CreateDomain(ctx context.Context, domain *types.GettableOrgDomain) error {
-	return m.store.CreateDomain(ctx, domain)
-}
-
-func (m *Module) DeleteDomain(ctx context.Context, id uuid.UUID) error {
-	return m.store.DeleteDomain(ctx, id)
-}
-
-func (m *Module) ListDomains(ctx context.Context, orgID valuer.UUID) ([]*types.GettableOrgDomain, error) {
-	return m.store.ListDomains(ctx, orgID)
-}
-
-func (m *Module) UpdateDomain(ctx context.Context, domain *types.GettableOrgDomain) error {
-	return m.store.UpdateDomain(ctx, domain)
-}
-
-func (m *Module) Register(ctx context.Context, req *types.PostableRegisterOrgAndAdmin) (*types.User, error) {
-	if req.Email == "" {
-		return nil, errors.NewInvalidInputf(errors.CodeInvalidInput, "email is required")
-	}
-
-	if req.Password == "" {
-		return nil, errors.New(errors.TypeInvalidInput, errors.CodeInvalidInput, "password is required")
-	}
-
-	organization := types.NewOrganization(req.OrgDisplayName)
-	err := m.orgSetter.Create(ctx, organization)
+func (module *Module) CreateFirstUser(ctx context.Context, organization *types.Organization, name string, email valuer.Email, passwd string) (*types.User, error) {
+	user, err := types.NewUser(name, email, types.RoleAdmin, organization.ID)
 	if err != nil {
-		return nil, model.InternalError(err)
+		return nil, err
 	}
 
-	user, err := types.NewUser(req.Name, req.Email, types.RoleAdmin.String(), organization.ID.StringValue())
+	password, err := types.NewFactorPassword(passwd, user.ID.StringValue())
 	if err != nil {
-		return nil, model.InternalError(err)
+		return nil, err
 	}
 
-	password, err := types.NewFactorPassword(req.Password)
-	if err != nil {
-		return nil, model.InternalError(err)
-	}
+	if err = module.store.RunInTx(ctx, func(ctx context.Context) error {
+		err := module.orgSetter.Create(ctx, organization)
+		if err != nil {
+			return err
+		}
 
-	user, err = m.CreateUserWithPassword(ctx, user, password)
-	if err != nil {
-		return nil, model.InternalError(err)
+		err = module.CreateUser(ctx, user, root.WithFactorPassword(password))
+		if err != nil {
+			return err
+		}
+
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	return user, nil
 }
 
-func (m *Module) Collect(ctx context.Context, orgID valuer.UUID) (map[string]any, error) {
-	count, err := m.store.CountByOrgID(ctx, orgID)
-	if err != nil {
-		return nil, err
+func (module *Module) Collect(ctx context.Context, orgID valuer.UUID) (map[string]any, error) {
+	stats := make(map[string]any)
+	count, err := module.store.CountByOrgID(ctx, orgID)
+	if err == nil {
+		stats["user.count"] = count
 	}
 
-	return map[string]any{"user.count": count}, nil
+	count, err = module.store.CountAPIKeyByOrgID(ctx, orgID)
+	if err == nil {
+		stats["factor.api_key.count"] = count
+	}
+
+	return stats, nil
 }

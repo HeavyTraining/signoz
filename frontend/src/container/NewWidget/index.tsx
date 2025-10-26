@@ -5,6 +5,7 @@ import { WarningOutlined } from '@ant-design/icons';
 import { Button, Flex, Modal, Space, Typography } from 'antd';
 import logEvent from 'api/common/logEvent';
 import OverlayScrollbar from 'components/OverlayScrollbar/OverlayScrollbar';
+import { adjustQueryForV5 } from 'components/QueryBuilderV2/utils';
 import { QueryParams } from 'constants/query';
 import {
 	initialQueriesMap,
@@ -20,6 +21,7 @@ import { useQueryBuilder } from 'hooks/queryBuilder/useQueryBuilder';
 import { useIsDarkMode } from 'hooks/useDarkMode';
 import { useSafeNavigate } from 'hooks/useSafeNavigate';
 import useUrlQuery from 'hooks/useUrlQuery';
+import createQueryParams from 'lib/createQueryParams';
 import { getDashboardVariables } from 'lib/dashbaordVariables/getDashboardVariables';
 import { GetQueryResultsProps } from 'lib/dashboard/getQueryResults';
 import { cloneDeep, defaultTo, isEmpty, isUndefined } from 'lodash-es';
@@ -40,6 +42,7 @@ import { AppState } from 'store/reducers';
 import { SuccessResponse } from 'types/api';
 import {
 	ColumnUnit,
+	ContextLinksData,
 	LegendPosition,
 	Widgets,
 } from 'types/api/dashboard/getAll';
@@ -71,7 +74,10 @@ import {
 	placeWidgetBetweenRows,
 } from './utils';
 
-function NewWidget({ selectedGraph }: NewWidgetProps): JSX.Element {
+function NewWidget({
+	selectedGraph,
+	enableDrillDown = false,
+}: NewWidgetProps): JSX.Element {
 	const { safeNavigate } = useSafeNavigate();
 	const {
 		selectedDashboard,
@@ -172,10 +178,6 @@ function NewWidget({ selectedGraph }: NewWidgetProps): JSX.Element {
 		selectedWidget?.yAxisUnit || 'none',
 	);
 
-	const [stacked, setStacked] = useState<boolean>(
-		selectedWidget?.isStacked || false,
-	);
-
 	const [stackedBarChart, setStackedBarChart] = useState<boolean>(
 		selectedWidget?.stackedBarChart || false,
 	);
@@ -238,6 +240,10 @@ function NewWidget({ selectedGraph }: NewWidgetProps): JSX.Element {
 		selectedWidget?.columnUnits || {},
 	);
 
+	const [contextLinks, setContextLinks] = useState<ContextLinksData>(
+		selectedWidget?.contextLinks || { linksData: [] },
+	);
+
 	useEffect(() => {
 		setSelectedWidget((prev) => {
 			if (!prev) {
@@ -248,7 +254,6 @@ function NewWidget({ selectedGraph }: NewWidgetProps): JSX.Element {
 				query: currentQuery,
 				title,
 				description,
-				isStacked: stacked,
 				opacity,
 				nullZeroValues: selectedNullZeroValue,
 				yAxisUnit,
@@ -267,6 +272,7 @@ function NewWidget({ selectedGraph }: NewWidgetProps): JSX.Element {
 				legendPosition,
 				customLegendColors,
 				columnWidths: columnWidths?.[selectedWidget?.id],
+				contextLinks,
 			};
 		});
 		// eslint-disable-next-line react-hooks/exhaustive-deps
@@ -281,7 +287,6 @@ function NewWidget({ selectedGraph }: NewWidgetProps): JSX.Element {
 		selectedTracesFields,
 		softMax,
 		softMin,
-		stacked,
 		thresholds,
 		title,
 		yAxisUnit,
@@ -293,6 +298,7 @@ function NewWidget({ selectedGraph }: NewWidgetProps): JSX.Element {
 		legendPosition,
 		customLegendColors,
 		columnWidths,
+		contextLinks,
 	]);
 
 	const closeModal = (): void => {
@@ -421,6 +427,7 @@ function NewWidget({ selectedGraph }: NewWidgetProps): JSX.Element {
 				formatForWeb:
 					getGraphTypeForFormat(selectedGraph || selectedWidget.panelTypes) ===
 					PANEL_TYPES.TABLE,
+				originalGraphType: selectedGraph || selectedWidget.panelTypes,
 			}));
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
@@ -467,6 +474,8 @@ function NewWidget({ selectedGraph }: NewWidgetProps): JSX.Element {
 			updatedLayout = newLayoutItem;
 		}
 
+		const adjustedQueryForV5 = adjustQueryForV5(currentQuery);
+
 		const dashboard: Props = {
 			id: selectedDashboard.id,
 
@@ -479,14 +488,13 @@ function NewWidget({ selectedGraph }: NewWidgetProps): JSX.Element {
 								...(selectedWidget || ({} as Widgets)),
 								description: selectedWidget?.description || '',
 								timePreferance: selectedTime.enum,
-								isStacked: selectedWidget?.isStacked || false,
 								opacity: selectedWidget?.opacity || '1',
 								nullZeroValues: selectedWidget?.nullZeroValues || 'zero',
 								title: selectedWidget?.title,
 								stackedBarChart: selectedWidget?.stackedBarChart || false,
 								yAxisUnit: selectedWidget?.yAxisUnit,
 								panelTypes: graphType,
-								query: currentQuery,
+								query: adjustedQueryForV5,
 								thresholds: selectedWidget?.thresholds,
 								columnUnits: selectedWidget?.columnUnits,
 								softMin: selectedWidget?.softMin || 0,
@@ -500,6 +508,7 @@ function NewWidget({ selectedGraph }: NewWidgetProps): JSX.Element {
 								selectedTracesFields: selectedWidget?.selectedTracesFields || [],
 								legendPosition: selectedWidget?.legendPosition || LegendPosition.BOTTOM,
 								customLegendColors: selectedWidget?.customLegendColors || {},
+								contextLinks: selectedWidget?.contextLinks || { linksData: [] },
 							},
 					  ]
 					: [
@@ -508,14 +517,13 @@ function NewWidget({ selectedGraph }: NewWidgetProps): JSX.Element {
 								...(selectedWidget || ({} as Widgets)),
 								description: selectedWidget?.description || '',
 								timePreferance: selectedTime.enum,
-								isStacked: selectedWidget?.isStacked || false,
 								opacity: selectedWidget?.opacity || '1',
 								nullZeroValues: selectedWidget?.nullZeroValues || 'zero',
 								title: selectedWidget?.title,
 								stackedBarChart: selectedWidget?.stackedBarChart || false,
 								yAxisUnit: selectedWidget?.yAxisUnit,
 								panelTypes: graphType,
-								query: currentQuery,
+								query: adjustedQueryForV5,
 								thresholds: selectedWidget?.thresholds,
 								columnUnits: selectedWidget?.columnUnits,
 								softMin: selectedWidget?.softMin || 0,
@@ -529,6 +537,7 @@ function NewWidget({ selectedGraph }: NewWidgetProps): JSX.Element {
 								selectedTracesFields: selectedWidget?.selectedTracesFields || [],
 								legendPosition: selectedWidget?.legendPosition || LegendPosition.BOTTOM,
 								customLegendColors: selectedWidget?.customLegendColors || {},
+								contextLinks: selectedWidget?.contextLinks || { linksData: [] },
 							},
 							...afterWidgets,
 					  ],
@@ -580,8 +589,19 @@ function NewWidget({ selectedGraph }: NewWidgetProps): JSX.Element {
 
 	const setGraphHandler = (type: PANEL_TYPES): void => {
 		setIsLoadingPanelData(true);
-		const updatedQuery = handleQueryChange(type as any, supersetQuery);
+		const updatedQuery = handleQueryChange(
+			type as any,
+			supersetQuery,
+			selectedGraph,
+		);
 		setGraphType(type);
+
+		// with a single source of truth for stacking, we can use the saved stacking value as a default value
+		const savedStackingValue = getWidget()?.stackedBarChart;
+		setStackedBarChart(
+			type === PANEL_TYPES.BAR ? savedStackingValue || false : false,
+		);
+
 		redirectWithQueryBuilderData(
 			updatedQuery,
 			{ [QueryParams.graphType]: type },
@@ -589,6 +609,15 @@ function NewWidget({ selectedGraph }: NewWidgetProps): JSX.Element {
 			true,
 		);
 	};
+
+	// add useEffect for graph type change from url
+	useEffect(() => {
+		const graphType = query.get('graphType');
+		if (graphType && graphType !== selectedGraph) {
+			setGraphType(graphType as PANEL_TYPES);
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [query]);
 
 	const onSaveDashboard = useCallback((): void => {
 		const widgetId = query.get('widgetId');
@@ -682,6 +711,28 @@ function NewWidget({ selectedGraph }: NewWidgetProps): JSX.Element {
 		}
 	}, [selectedLogFields, selectedTracesFields, currentQuery, selectedGraph]);
 
+	const showSwitchToViewModeButton =
+		enableDrillDown && !isNewDashboard && !!query.get('widgetId');
+
+	const handleSwitchToViewMode = useCallback(() => {
+		if (!query.get('widgetId')) return;
+		const widgetId = query.get('widgetId') || '';
+		const graphType = query.get('graphType') || '';
+		const queryParams = {
+			[QueryParams.expandedWidgetId]: widgetId,
+			[QueryParams.graphType]: graphType,
+			[QueryParams.compositeQuery]: encodeURIComponent(
+				JSON.stringify(currentQuery),
+			),
+		};
+
+		const updatedSearch = createQueryParams(queryParams);
+		safeNavigate({
+			pathname: generatePath(ROUTES.DASHBOARD, { dashboardId }),
+			search: updatedSearch,
+		});
+	}, [query, safeNavigate, dashboardId, currentQuery]);
+
 	return (
 		<Container>
 			<div className="edit-header">
@@ -698,31 +749,42 @@ function NewWidget({ selectedGraph }: NewWidgetProps): JSX.Element {
 						</Typography.Text>
 					</Flex>
 				</div>
-				{isSaveDisabled && (
-					<Button
-						type="primary"
-						data-testid="new-widget-save"
-						loading={updateDashboardMutation.isLoading}
-						disabled={isSaveDisabled}
-						onClick={onSaveDashboard}
-						className="save-btn"
-					>
-						Save Changes
-					</Button>
-				)}
-				{!isSaveDisabled && (
-					<Button
-						type="primary"
-						data-testid="new-widget-save"
-						loading={updateDashboardMutation.isLoading}
-						disabled={isSaveDisabled}
-						onClick={onSaveDashboard}
-						icon={<Check size={14} />}
-						className="save-btn"
-					>
-						Save Changes
-					</Button>
-				)}
+				<div className="right-header">
+					{showSwitchToViewModeButton && (
+						<Button
+							data-testid="switch-to-view-mode"
+							disabled={isSaveDisabled || !currentQuery}
+							onClick={handleSwitchToViewMode}
+						>
+							Switch to View Mode
+						</Button>
+					)}
+					{isSaveDisabled && (
+						<Button
+							type="primary"
+							data-testid="new-widget-save"
+							loading={updateDashboardMutation.isLoading}
+							disabled={isSaveDisabled}
+							onClick={onSaveDashboard}
+							className="save-btn"
+						>
+							Save Changes
+						</Button>
+					)}
+					{!isSaveDisabled && (
+						<Button
+							type="primary"
+							data-testid="new-widget-save"
+							loading={updateDashboardMutation.isLoading}
+							disabled={isSaveDisabled}
+							onClick={onSaveDashboard}
+							icon={<Check size={14} />}
+							className="save-btn"
+						>
+							Save Changes
+						</Button>
+					)}
+				</div>
 			</div>
 
 			<PanelContainer>
@@ -741,6 +803,7 @@ function NewWidget({ selectedGraph }: NewWidgetProps): JSX.Element {
 								setRequestData={setRequestData}
 								isLoadingPanelData={isLoadingPanelData}
 								setQueryResponse={setQueryResponse}
+								enableDrillDown={enableDrillDown}
 							/>
 						)}
 					</OverlayScrollbar>
@@ -754,8 +817,6 @@ function NewWidget({ selectedGraph }: NewWidgetProps): JSX.Element {
 							setTitle={setTitle}
 							description={description}
 							setDescription={setDescription}
-							stacked={stacked}
-							setStacked={setStacked}
 							stackedBarChart={stackedBarChart}
 							setStackedBarChart={setStackedBarChart}
 							opacity={opacity}
@@ -791,6 +852,9 @@ function NewWidget({ selectedGraph }: NewWidgetProps): JSX.Element {
 							setSoftMin={setSoftMin}
 							softMax={softMax}
 							setSoftMax={setSoftMax}
+							contextLinks={contextLinks}
+							setContextLinks={setContextLinks}
+							enableDrillDown={enableDrillDown}
 						/>
 					</OverlayScrollbar>
 				</RightContainerWrapper>

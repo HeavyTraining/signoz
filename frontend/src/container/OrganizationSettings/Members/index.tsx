@@ -3,6 +3,7 @@ import { ColumnsType } from 'antd/lib/table';
 import getAll from 'api/v1/user/get';
 import deleteUser from 'api/v1/user/id/delete';
 import update from 'api/v1/user/id/update';
+import ErrorContent from 'components/ErrorModal/components/ErrorContent';
 import { ResizeTable } from 'components/ResizeTable';
 import { DATE_TIME_FORMATS } from 'constants/dateTimeFormats';
 import dayjs from 'dayjs';
@@ -11,9 +12,7 @@ import { useAppContext } from 'providers/App/App';
 import { Dispatch, SetStateAction, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from 'react-query';
-import { SuccessResponseV2 } from 'types/api';
 import APIError from 'types/api/error';
-import { UserResponse } from 'types/api/user/getUsers';
 import { ROLES } from 'types/roles';
 
 import DeleteMembersDetails from '../DeleteMembersDetails';
@@ -115,12 +114,23 @@ function UserFunction({
 				role,
 			});
 			onUpdateDetailsHandler();
-			notifications.success({
-				message: t('success', {
-					ns: 'common',
-				}),
-			});
+
+			if (role !== accessLevel) {
+				notifications.success({
+					message: 'User details updated successfully',
+					description:
+						'The user details have been updated successfully. Please request the user to logout and login again to access the platform with updated privileges.',
+				});
+			} else {
+				notifications.success({
+					message: t('success', {
+						ns: 'common',
+					}),
+				});
+			}
+
 			setIsUpdateLoading(false);
+			setIsModalVisible(false);
 		} catch (error) {
 			notifications.error({
 				message: (error as APIError).getErrorCode(),
@@ -146,6 +156,7 @@ function UserFunction({
 			</Space>
 			<Modal
 				title="Edit member details"
+				className="edit-member-details-modal"
 				open={isModalVisible}
 				onOk={(): void => onModalToggleHandler(setIsModalVisible, false)}
 				onCancel={(): void => onModalToggleHandler(setIsModalVisible, false)}
@@ -198,10 +209,8 @@ function UserFunction({
 
 function Members(): JSX.Element {
 	const { org } = useAppContext();
-	const { status, data, isLoading } = useQuery<
-		SuccessResponseV2<UserResponse[]>,
-		APIError
-	>({
+
+	const { data, isLoading, error } = useQuery({
 		queryFn: () => getAll(),
 		queryKey: ['getOrgUser', org?.[0].id],
 	});
@@ -209,7 +218,7 @@ function Members(): JSX.Element {
 	const [dataSource, setDataSource] = useState<DataType[]>([]);
 
 	useEffect(() => {
-		if (status === 'success' && data?.data && Array.isArray(data.data)) {
+		if (data?.data && Array.isArray(data.data)) {
 			const updatedData: DataType[] = data?.data?.map((e) => ({
 				accessLevel: e.role,
 				email: e.email,
@@ -219,7 +228,7 @@ function Members(): JSX.Element {
 			}));
 			setDataSource(updatedData);
 		}
-	}, [data?.data, status]);
+	}, [data]);
 
 	const columns: ColumnsType<DataType> = [
 		{
@@ -274,22 +283,25 @@ function Members(): JSX.Element {
 	];
 
 	return (
-		<Space direction="vertical" size="middle">
+		<div className="members-container">
 			<Typography.Title level={3}>
 				Members{' '}
 				{!isLoading && dataSource && (
 					<div className="members-count"> ({dataSource.length}) </div>
 				)}
 			</Typography.Title>
-			<ResizeTable
-				columns={columns}
-				tableLayout="fixed"
-				dataSource={dataSource}
-				pagination={false}
-				loading={status === 'loading'}
-				bordered
-			/>
-		</Space>
+			{!(error as APIError) && (
+				<ResizeTable
+					columns={columns}
+					tableLayout="fixed"
+					dataSource={dataSource}
+					pagination={false}
+					loading={isLoading}
+					bordered
+				/>
+			)}
+			{(error as APIError) && <ErrorContent error={error as APIError} />}
+		</div>
 	);
 }
 

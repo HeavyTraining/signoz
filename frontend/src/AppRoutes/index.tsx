@@ -3,6 +3,8 @@ import { ConfigProvider } from 'antd';
 import getLocalStorageApi from 'api/browser/localstorage/get';
 import setLocalStorageApi from 'api/browser/localstorage/set';
 import logEvent from 'api/common/logEvent';
+import AppLoading from 'components/AppLoading/AppLoading';
+import KBarCommandPalette from 'components/KBarCommandPalette/KBarCommandPalette';
 import NotFound from 'components/NotFound';
 import Spinner from 'components/Spinner';
 import UserpilotRouteTracker from 'components/UserpilotRouteTracker/UserpilotRouteTracker';
@@ -24,6 +26,8 @@ import { useAppContext } from 'providers/App/App';
 import { IUser } from 'providers/App/types';
 import { DashboardProvider } from 'providers/Dashboard/Dashboard';
 import { ErrorModalProvider } from 'providers/ErrorModalProvider';
+import { KBarCommandPaletteProvider } from 'providers/KBarCommandPaletteProvider';
+import { PreferenceContextProvider } from 'providers/preferences/context/PreferenceContextProvider';
 import { QueryBuilderProvider } from 'providers/QueryBuilder';
 import { Suspense, useCallback, useEffect, useState } from 'react';
 import { Route, Router, Switch } from 'react-router-dom';
@@ -71,7 +75,7 @@ function App(): JSX.Element {
 				const orgName =
 					org && Array.isArray(org) && org.length > 0 ? org[0].displayName : '';
 
-				const { displayName, email, role } = user;
+				const { displayName, email, role, id, orgId } = user;
 
 				const domain = extractDomain(email);
 				const hostNameParts = hostname.split('.');
@@ -105,7 +109,7 @@ function App(): JSX.Element {
 					logEvent('Domain Identified', groupTraits, 'group');
 				}
 				if (window && window.Appcues) {
-					window.Appcues.identify(email, {
+					window.Appcues.identify(id, {
 						name: displayName,
 
 						tenant_id: hostNameParts[0],
@@ -131,7 +135,7 @@ function App(): JSX.Element {
 					isPaidUser: !!trialInfo?.trialConvertedToSubscription,
 				});
 
-				posthog?.identify(email, {
+				posthog?.identify(id, {
 					email,
 					name: displayName,
 					orgName,
@@ -143,7 +147,7 @@ function App(): JSX.Element {
 					isPaidUser: !!trialInfo?.trialConvertedToSubscription,
 				});
 
-				posthog?.group('company', domain, {
+				posthog?.group('company', orgId, {
 					name: orgName,
 					tenant_id: hostNameParts[0],
 					data_region: hostNameParts[1],
@@ -191,7 +195,8 @@ function App(): JSX.Element {
 				// if the user is on basic plan then remove billing
 				if (isOnBasicPlan) {
 					updatedRoutes = updatedRoutes.filter(
-						(route) => route?.path !== ROUTES.BILLING,
+						(route) =>
+							route?.path !== ROUTES.BILLING && route?.path !== ROUTES.INTEGRATIONS,
 					);
 				}
 
@@ -204,7 +209,8 @@ function App(): JSX.Element {
 			} else {
 				// if not a cloud user then remove billing and add list licenses route
 				updatedRoutes = updatedRoutes.filter(
-					(route) => route?.path !== ROUTES.BILLING,
+					(route) =>
+						route?.path !== ROUTES.BILLING && route?.path !== ROUTES.INTEGRATIONS,
 				);
 				updatedRoutes = [...updatedRoutes, LIST_LICENSES];
 			}
@@ -340,7 +346,7 @@ function App(): JSX.Element {
 	if (isLoggedInState) {
 		// if the setup calls are loading then return a spinner
 		if (isFetchingActiveLicense || isFetchingUser || isFetchingFeatureFlags) {
-			return <Spinner tip="Loading..." />;
+			return <AppLoading />;
 		}
 
 		// if the required calls fails then return a something went wrong error
@@ -365,39 +371,44 @@ function App(): JSX.Element {
 			<ConfigProvider theme={themeConfig}>
 				<Router history={history}>
 					<CompatRouter>
-						<UserpilotRouteTracker />
-						<NotificationProvider>
-							<ErrorModalProvider>
-								<PrivateRoute>
-									<ResourceProvider>
-										<QueryBuilderProvider>
-											<DashboardProvider>
-												<KeyboardHotkeysProvider>
-													<AlertRuleProvider>
-														<AppLayout>
-															<Suspense fallback={<Spinner size="large" tip="Loading..." />}>
-																<Switch>
-																	{routes.map(({ path, component, exact }) => (
-																		<Route
-																			key={`${path}`}
-																			exact={exact}
-																			path={path}
-																			component={component}
-																		/>
-																	))}
-																	<Route exact path="/" component={Home} />
-																	<Route path="*" component={NotFound} />
-																</Switch>
-															</Suspense>
-														</AppLayout>
-													</AlertRuleProvider>
-												</KeyboardHotkeysProvider>
-											</DashboardProvider>
-										</QueryBuilderProvider>
-									</ResourceProvider>
-								</PrivateRoute>
-							</ErrorModalProvider>
-						</NotificationProvider>
+						<KBarCommandPaletteProvider>
+							<UserpilotRouteTracker />
+							<KBarCommandPalette />
+							<NotificationProvider>
+								<ErrorModalProvider>
+									<PrivateRoute>
+										<ResourceProvider>
+											<QueryBuilderProvider>
+												<DashboardProvider>
+													<KeyboardHotkeysProvider>
+														<AlertRuleProvider>
+															<AppLayout>
+																<PreferenceContextProvider>
+																	<Suspense fallback={<Spinner size="large" tip="Loading..." />}>
+																		<Switch>
+																			{routes.map(({ path, component, exact }) => (
+																				<Route
+																					key={`${path}`}
+																					exact={exact}
+																					path={path}
+																					component={component}
+																				/>
+																			))}
+																			<Route exact path="/" component={Home} />
+																			<Route path="*" component={NotFound} />
+																		</Switch>
+																	</Suspense>
+																</PreferenceContextProvider>
+															</AppLayout>
+														</AlertRuleProvider>
+													</KeyboardHotkeysProvider>
+												</DashboardProvider>
+											</QueryBuilderProvider>
+										</ResourceProvider>
+									</PrivateRoute>
+								</ErrorModalProvider>
+							</NotificationProvider>
+						</KBarCommandPaletteProvider>
 					</CompatRouter>
 				</Router>
 			</ConfigProvider>
